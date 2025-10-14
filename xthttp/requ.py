@@ -31,9 +31,9 @@ from typing import Any
 import requests
 from nswrapslite.log import logging_wraps as log_wraps
 from nswrapslite.retry import retry_wraps
+from resp import HttpError, RespFactory, UnifiedResp as htmlResponse
 from xt_head import TIMEOUT, Head
 from xtlog import mylog
-from xtresp import HttpError, RespFactory, UnifiedResp as htmlResponse
 
 # 支持的HTTP请求方法
 supported_request_methods = ('get', 'post', 'head', 'options', 'put', 'delete', 'trace', 'connect', 'patch')

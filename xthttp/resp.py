@@ -1,13 +1,13 @@
 # !/usr/bin/env python3
 """
 ==============================================================
-模块名称     : xt_response_unified.py
+模块名称     : resp.py
 功能描述     : 统一响应处理模块 - 提供同步和异步HTTP响应的统一接口
 开发工具     : VSCode
 作者         : Even.Sand
 联系方式     : sandorn@163.com
 最后修改时间 : 2025-10-13 17:00:00
-Github       : https://github.com/sandorn/home
+Github       : https://github.com/sandorn/xthttp
 
 【核心功能】
 - 统一的响应对象接口,同时支持同步和异步HTTP库

@@ -7,7 +7,7 @@ Author       : sandorn sandorn@live.cn
 Date         : 2022-12-22 17:35:56
 LastEditTime : 2025-09-07 10:00:00
 FilePath     : /CODE/xjlib/xt_ahttp.py
-Github       : https://github.com/sandorn/home
+Github       : https://github.com/sandorn/xthttp
 
 本模块提供以下核心功能:
 - 基于aiohttp的异步HTTP请求客户端实现
@@ -38,8 +38,8 @@ from aiohttp import ClientResponse, ClientSession, ClientTimeout, TCPConnector
 from nswrapslite.exception import _handle_exception as handle_exception
 from nswrapslite.log import logging_wraps as log_wraps
 from nswrapslite.retry import retry_wraps
+from resp import UnifiedResp as ACResponse
 from xt_head import TIMEOUT, Head
-from xtresp import UnifiedResp as ACResponse
 
 # 定义模块公开接口
 __all__ = ('AsyncHttpClient', 'ahttp_get', 'ahttp_get_all', 'ahttp_post', 'ahttp_post_all')
