@@ -33,8 +33,8 @@ from collections.abc import Callable, Sequence
 from functools import partial
 
 from aiohttp import ClientResponse, ClientSession, ClientTimeout, TCPConnector
-from head import TIMEOUT, Head
-from nswrapslite import TRETRY as retry_wraps
+from headers import TIMEOUT, Head
+from nswrapslite import TRETRY
 from nswrapslite.exception import handle_exception
 from nswrapslite.log import logging_wraps as log_wraps
 from resp import UnifiedResp as ACResponse
@@ -214,7 +214,7 @@ class AsyncTask:
         self.kwargs = kwargs
         return self
 
-    @retry_wraps
+    @TRETRY
     async def _fetch(self) -> tuple[ClientResponse | None, bytes | str]:
         """执行HTTP请求,内部方法
 
@@ -253,7 +253,7 @@ class AsyncTask:
         response, content = await self._fetch()
         return ACResponse(response, content, self.index, self.url)
 
-    @retry_wraps
+    @TRETRY
     async def multi_start(self, client: ClientSession) -> ACResponse:
         """在共享会话中执行任务
 
@@ -431,7 +431,7 @@ class AHttpLoop:
         index = index if index is not None else id(url)
         _ = kwargs.pop('callback', None)
 
-        @retry_wraps
+        @TRETRY
         async def _single_fetch() -> tuple:
             if self._session is None:
                 self._session = await self.create_session()
@@ -495,5 +495,5 @@ if __name__ == '__main__':
         thread_print('\nclient.request_batch(分批处理):', await client.request_batch('get', urls[2:4]))
 
     # main()
-    test_ahttploop()
-    # asyncio.run(demo_async_client())
+    # test_ahttploop()
+    asyncio.run(demo_async_client())
