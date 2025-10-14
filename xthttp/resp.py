@@ -1,12 +1,10 @@
 # !/usr/bin/env python3
 """
 ==============================================================
-模块名称     : resp.py
-功能描述     : 统一响应处理模块 - 提供同步和异步HTTP响应的统一接口
-开发工具     : VSCode
-作者         : Even.Sand
-联系方式     : sandorn@163.com
-最后修改时间 : 2025-10-13 17:00:00
+Description     : 统一响应处理模块 - 提供同步和异步HTTP响应的统一接口
+Develop      : VSCode
+Author       : sandorn sandorn@live.cn
+LastEditTime : 2025-10-14 22:00:00
 Github       : https://github.com/sandorn/xthttp
 
 【核心功能】
@@ -217,13 +215,22 @@ class UnifiedResp:
     _query_cache: PyQuery | None = None
     _chinese_content_cache: dict | None = None
 
-    def __init__(self, response: RawResponseType = None, content: ContentDataType = None, index: int | None = None, adapter: BaseRespAdapter | None = None, exception: Exception | None = None):
+    def __init__(
+        self,
+        response: RawResponseType = None,
+        content: ContentDataType = None,
+        index: int | None = None,
+        url: str | None = None,
+        adapter: BaseRespAdapter | None = None,
+        exception: Exception | None = None,
+    ):
         """初始化统一响应对象"""
         self._raw = response
         self._index = index if index is not None else id(self)
         self._adapter = adapter or RespFactory._select_adapter(response)
         self._exception = exception
         self._error_type = type(exception).__name__ if exception else None
+        self._url = url if url is not None else (self._adapter.get_url() if self._adapter else '')
 
         # 处理内容
         self._content = self._process_content(content)
@@ -236,8 +243,7 @@ class UnifiedResp:
         self._encoding = self._determine_encoding()
 
     def __repr__(self) -> str:
-        base = f'{self.__class__.__name__} | STATUS:{self.status} | ID:{self._index}'
-        return f'{base} | URL:{self.url}' if self._raw else base
+        return f'{self.__class__.__name__} | STATUS:{self.status} | ID:{self.index} | URL:{self.url}'
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -487,31 +493,29 @@ class UnifiedResp:
         # 1. 从内容中提取声明的编码
         if content_encoding := self._extract_encoding_from_content():
             encoding_candidates.add(content_encoding)
-            mylog.debug(f'从内容提取编码: {content_encoding}')
+            # mylog.debug(f'从内容提取编码: {content_encoding}')
 
         # 2. 使用chardet检测
         if detected_encoding := self._detect_encoding_with_chardet():
             encoding_candidates.add(detected_encoding)
-            mylog.debug(f'chardet检测编码: {detected_encoding}')
+            # mylog.debug(f'chardet检测编码: {detected_encoding}')
 
         # 3. 检查中文内容特征
         has_chinese = self._has_chinese_content()
         is_chinese_domain = self._is_chinese_domain(self.url)
 
         if has_chinese or is_chinese_domain:
-            mylog.debug(f'检测到中文内容特征: 域名={is_chinese_domain}, 内容={has_chinese}')
+            # mylog.debug(f'检测到中文内容特征: 域名={is_chinese_domain}, 内容={has_chinese}')
             encoding_candidates.update(self._chinese_encodings)
 
         # 4. 适配器提供的编码
         if self._adapter and (adapter_encoding := self._adapter.get_encoding()):
             encoding_candidates.add(adapter_encoding)
-            mylog.debug(f'适配器提供编码: {adapter_encoding}')
+            # mylog.debug(f'适配器提供编码: {adapter_encoding}')
 
         # 5. 选择最佳编码
-        final_encoding = self._select_best_encoding(list(encoding_candidates), has_chinese)
-        mylog.debug(f'最终选择编码: {final_encoding}')
-
-        return final_encoding
+        # mylog.debug(f'最终选择编码: {final_encoding}')
+        return self._select_best_encoding(list(encoding_candidates), has_chinese)
 
     def _select_best_encoding(self, candidates: list[str], has_chinese: bool) -> str:
         """从候选编码中选择最佳编码 - 简化修复版本"""
@@ -742,25 +746,6 @@ class UnifiedResp:
 
         return {}
 
-    # ==================== 调试方法 ====================
-
-    def debug_dom_info(self) -> dict:
-        """调试DOM相关信息"""
-        dom = self.dom
-        has_dom = dom is not None
-        dom_type = type(dom).__name__ if has_dom else None
-        has_xpath_method = hasattr(dom, 'xpath') if has_dom else False
-        root_tag = dom.tag if has_dom and hasattr(dom, 'tag') else None
-
-        return {
-            'has_dom': has_dom,
-            'dom_type': dom_type,
-            'has_xpath_method': has_xpath_method,
-            'text_length': len(self.text) if self.text else 0,
-            'content_type': type(self._content).__name__,
-            'root_tag': root_tag,
-        }
-
 
 if __name__ == '__main__':
 
@@ -771,7 +756,7 @@ if __name__ == '__main__':
 
         try:
             # 导入get函数
-            from xt_requests import get
+            from requ import get
 
             # 获取原始响应
             raw_response = get(url)

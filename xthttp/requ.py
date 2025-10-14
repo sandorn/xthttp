@@ -4,10 +4,8 @@
 Description  : HTTP请求工具模块 - 提供简化的requests调用和会话管理功能
 Develop      : VSCode
 Author       : sandorn sandorn@live.cn
-Date         : 2022-12-22 17:35:56
-LastEditTime : 2024-09-06 11:00:00
-FilePath     : /CODE/xjLib/xt_requests.py
-Github       : https://github.com/sandorn/home
+LastEditTime : 2025-10-14 22:00:00
+Github       : https://github.com/sandorn/xthttp
 
 本模块提供以下核心功能:
 - 简化的HTTP请求方法(get, post等),自动添加请求头和超时设置
@@ -66,16 +64,17 @@ def _retry_request(method: str, url: str, *args: Any, **kwargs: Any) -> htmlResp
     try:
         response = requests.request(method, url, *args, timeout=timeout, **kwargs)
         # 创建统一响应对象
-        unified_resp = htmlResponse(response, response.content, index)
+        unified_resp = htmlResponse(response, response.content, index, url)
         # response.raise_for_status()
-        # 增加参数控制是否自动检查状态码
+
         if kwargs.pop('check_status', True) and not RespFactory.is_success(unified_resp):
             raise HttpError(unified_resp)
+
         return unified_resp
     except requests.exceptions.RequestException as e:
         mylog.error(f'Request failed: {method} {url}, error: {e!s}')
         # 传递原始异常信息
-        return htmlResponse(None, str(e).encode(), index, exception=e)
+        return htmlResponse(None, str(e).encode(), index, url=url, exception=e)
 
 
 def single_parse(method: str, url: str, *args: Any, **kwargs: Any) -> htmlResponse:
@@ -98,7 +97,7 @@ def single_parse(method: str, url: str, *args: Any, **kwargs: Any) -> htmlRespon
     if method_lower not in supported_request_methods:
         error_msg = f'Method:{method} not in supported_request_methods'
         mylog.warning(error_msg)
-        return htmlResponse(None, error_msg.encode(), id(url))
+        return htmlResponse(None, error_msg.encode(), id(url), url)
 
     # 设置默认参数
     kwargs.setdefault('headers', Head().randua)  # 自动设置随机User-Agent
@@ -194,7 +193,7 @@ class SessionClient:
         if self.method not in supported_request_methods:
             error_msg = f'Method:{self.method} not in {supported_request_methods}'
             mylog.warning(error_msg)
-            return htmlResponse(None, error_msg.encode(), id(self.url))
+            return htmlResponse(None, error_msg.encode(), id(self.url), self.url)
 
         self.args = args[1:]
 
@@ -219,7 +218,7 @@ class SessionClient:
         response = self.session.request(self.method, self.url, *self.args, **self.kwargs)
         # 自动更新Cookie
         self.update_cookies(dict(response.cookies))
-        return htmlResponse(response, response.content, id(self.url))
+        return htmlResponse(response, response.content, id(self.url), self.url)
 
     def update_cookies(self, cookie_dict: dict[str, str]) -> None:
         """更新会话的Cookie

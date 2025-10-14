@@ -4,9 +4,7 @@
 Description  : 异步HTTP请求模块 - 提供基于aiohttp的高性能异步HTTP客户端功能
 Develop      : VSCode
 Author       : sandorn sandorn@live.cn
-Date         : 2022-12-22 17:35:56
-LastEditTime : 2025-09-07 10:00:00
-FilePath     : /CODE/xjlib/xt_ahttp.py
+LastEditTime : 2025-10-14 22:00:00
 Github       : https://github.com/sandorn/xthttp
 
 本模块提供以下核心功能:
@@ -35,11 +33,11 @@ from collections.abc import Callable, Sequence
 from functools import partial
 
 from aiohttp import ClientResponse, ClientSession, ClientTimeout, TCPConnector
-from nswrapslite.exception import _handle_exception as handle_exception
+from head import TIMEOUT, Head
+from nswrapslite import TRETRY as retry_wraps
+from nswrapslite.exception import handle_exception
 from nswrapslite.log import logging_wraps as log_wraps
-from nswrapslite.retry import retry_wraps
 from resp import UnifiedResp as ACResponse
-from xt_head import TIMEOUT, Head
 
 # 定义模块公开接口
 __all__ = ('AsyncHttpClient', 'ahttp_get', 'ahttp_get_all', 'ahttp_post', 'ahttp_post_all')
@@ -216,7 +214,7 @@ class AsyncTask:
         self.kwargs = kwargs
         return self
 
-    @retry_wraps(default_return=(None, '重试失败'))
+    @retry_wraps
     async def _fetch(self) -> tuple[ClientResponse | None, bytes | str]:
         """执行HTTP请求,内部方法
 
@@ -234,11 +232,12 @@ class AsyncTask:
                 self.method,
                 self.url,
                 *self.args,
-                raise_for_status=True,
+                raise_for_status=True,  # ! 修改为False，让程序能获取到真实的HTTP状态码反馈
                 **self.kwargs,
             ) as response,
         ):
             content = await response.content.read()
+            # 即使状态码不是200，也要返回响应对象，以便获取真实反馈
             return response, content
 
     @log_wraps
@@ -252,7 +251,7 @@ class AsyncTask:
         """
 
         response, content = await self._fetch()
-        return ACResponse(response, content, self.index)
+        return ACResponse(response, content, self.index, self.url)
 
     @retry_wraps
     async def multi_start(self, client: ClientSession) -> ACResponse:
@@ -269,10 +268,10 @@ class AsyncTask:
         try:
             async with client.request(self.method, self.url, *self.args, raise_for_status=True, **self.kwargs) as response:
                 content = await response.content.read()
-                result = ACResponse(response, content, self.index)
+                result = ACResponse(response, content, self.index, self.url)
         except Exception as err:
             handle_exception(err)
-            result = ACResponse(None, f'{type(err).__name__} | {err!s}'.encode(), self.index)
+            result = ACResponse(None, f'{type(err).__name__}({err!s})', self.index, self.url)
         return self.callback(result) if callable(self.callback) else result
 
 
@@ -293,7 +292,7 @@ def single_parse(method: str, url: str, *args, **kwargs) -> ACResponse:
         ACResponse: 响应对象
     """
     if method.lower() not in REQUEST_METHODS:
-        return ACResponse(None, f'不支持的请求方法:{method},支持的方法:{REQUEST_METHODS}'.encode(), id(url))
+        return ACResponse(None, f'不支持的请求方法:{method}', id(url), url)
     # 使用全局默认客户端处理请求
     return asyncio.run(_default_client.request(method, url, *args, **kwargs))
 
@@ -311,7 +310,7 @@ def multi_parse(method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[A
         Sequence[ACResponse | BaseException]: 响应对象或异常的序列
     """
     if method.lower() not in REQUEST_METHODS:
-        return [ACResponse(None, f'不支持的请求方法:{method},支持的方法:{REQUEST_METHODS}'.encode(), 0)]
+        return [ACResponse(None, f'不支持的请求方法:{method}', 0)]
 
     force_sequential = kwargs.pop('force_sequential', False)
 
@@ -342,18 +341,26 @@ class AHttpLoop:
         self.method: str = ''  # 保存请求方法
         self.max_concurrent: int = max_concurrent  # 最大并发请求数
         # 获取或创建事件循环
+        self._loop = self.get_loop()
+        self._session = self.get_session()
+
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        """返回事件循环"""
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
-        self._session: ClientSession | None = None
+        return self._loop
 
+    def get_session(self) -> ClientSession:
+        """返回会话"""
         try:
-            self._session = self._loop.run_until_complete(self.create_session())
+            session = self._loop.run_until_complete(self.create_session())
         except Exception as err:
-            self._session = None
+            session = None
             return handle_exception(err, re_raise=True)
+        return session
 
     async def __aenter__(self):
         """异步上下文管理器入口"""
@@ -421,7 +428,7 @@ class AHttpLoop:
     async def _retry_request(self, url: str, index: int | None = None, **kwargs) -> ACResponse:
         kwargs.setdefault('headers', Head().randua)
         kwargs.setdefault('timeout', ClientTimeout(TIMEOUT))
-        index = index or id(url)
+        index = index if index is not None else id(url)
         _ = kwargs.pop('callback', None)
 
         @retry_wraps
@@ -429,16 +436,15 @@ class AHttpLoop:
             if self._session is None:
                 self._session = await self.create_session()
             async with self._session.request(self.method, url, raise_for_status=True, **kwargs) as response:
-                response.raise_for_status()
                 content = await response.content.read()
                 return response, content
 
         try:
             response, content = await _single_fetch()
-            return ACResponse(response, content, index)
+            return ACResponse(response, content, index, url)
         except Exception as err:
             handle_exception(err)
-            return ACResponse(None, f'{type(err).__name__} | {err!s}'.encode(), index)
+            return ACResponse(None, f'{type(err).__name__}({err!s})', index, url)
 
     async def _multi_fetch(self, method: str, urls_list: Sequence[str], **kwargs):
         self.method = method
@@ -462,18 +468,18 @@ if __name__ == '__main__':
     def main():
         """主测试函数"""
         # 使用便捷函数发送单个GET请求
-        thread_print('发送单个GET请求...', ahttp_get(urls[0]))
+        # thread_print('发送单个GET请求...', ahttp_get(urls[0]))
 
         # 使用便捷函数发送多个GET请求
         thread_print('ahttp_get_all 发送多个GET请求...', ahttp_get_all(urls, force_sequential=False))
 
         # 发送POST请求
-        thread_print('发送POST请求...', ahttp_post(urls[3], data=b'test_data'))
+        # thread_print('发送POST请求...', ahttp_post(urls[3], data=b'test_data'))
 
     def test_ahttploop():
         ahc = AHttpLoop()
         thread_print(111111, ahc.get('https://www.163.com'))
-        thread_print(222222, ahc.getall(['https://www.163.com', 'https://httpbin.org/ip']))
+        thread_print(222222, ahc.getall(['https://www.163.com', 'https://httpbin.org/post']))
 
     async def demo_async_client():
         """演示AsyncHttpClient的异步用法"""
@@ -489,5 +495,5 @@ if __name__ == '__main__':
         thread_print('\nclient.request_batch(分批处理):', await client.request_batch('get', urls[2:4]))
 
     # main()
-    # test_ahttploop()
-    asyncio.run(demo_async_client())
+    test_ahttploop()
+    # asyncio.run(demo_async_client())
