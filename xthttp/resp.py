@@ -95,7 +95,7 @@ class HttpError(Exception):
     def __init__(self, response, message=None):
         self.response = response
         self.status_code = response.status if response else 999
-        self.message = message or f'HTTP Error {self.status_code}'
+        self.message = message or f'HttpError({self.status_code})'
         super().__init__(self.message)
 
 
@@ -222,14 +222,11 @@ class UnifiedResp:
         index: int | None = None,
         url: str | None = None,
         adapter: BaseRespAdapter | None = None,
-        exception: Exception | None = None,
     ):
         """初始化统一响应对象"""
         self._raw = response
         self._index = index if index is not None else id(self)
         self._adapter = adapter or RespFactory._select_adapter(response)
-        self._exception = exception
-        self._error_type = type(exception).__name__ if exception else None
         self._url = url if url is not None else (self._adapter.get_url() if self._adapter else '')
 
         # 处理内容
@@ -243,7 +240,7 @@ class UnifiedResp:
         self._encoding = self._determine_encoding()
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__} | STATUS:{self.status} | ID:{self.index} | URL:{self.url}'
+        return f'{self.__class__.__name__} | Status:{self.status} | Id:{self.index} | Url:{self.url}'
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -258,11 +255,14 @@ class UnifiedResp:
     def ok(self):
         return RespFactory.is_success(self)
 
-    @property
-    def exception(self):
-        return self._exception
-
     def raise_for_status(self):
+        # 优先使用原始的 raise_for_status 方法
+        raw_response = getattr(self._adapter, 'raw_response', None)
+        if raw_response and hasattr(raw_response, 'raise_for_status'):
+            raw_response.raise_for_status()  # 如果状态码不正常，这里会抛出异常
+            return  # 如果状态码正常，直接返回
+
+        # 后备方案：使用自定义逻辑
         if not self.ok:
             raise HttpError(self)
 
@@ -763,6 +763,7 @@ if __name__ == '__main__':
 
             # 创建统一响应对象
             unified_resp = RespFactory.create_response(raw_response)
+            unified_resp.raise_for_status()
 
             mylog.info(f'响应状态: {unified_resp.status}|{unified_resp.index}')
             mylog.info(f'响应URL: {unified_resp.url}')

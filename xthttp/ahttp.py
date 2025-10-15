@@ -32,11 +32,9 @@ import asyncio
 from collections.abc import Callable, Sequence
 from functools import partial
 
-from aiohttp import ClientResponse, ClientSession, ClientTimeout, TCPConnector
+from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from headers import TIMEOUT, Head
-from nswrapslite import TRETRY
-from nswrapslite.exception import handle_exception
-from nswrapslite.log import logging_wraps as log_wraps
+from nswrapslite import spider_retry
 from resp import UnifiedResp as ACResponse
 
 # 定义模块公开接口
@@ -84,7 +82,7 @@ class AsyncHttpClient:
         async with self.semaphore:
             return await task.start()
 
-    async def request_multi(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[ACResponse | BaseException]:
+    async def multi_request(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[ACResponse | BaseException]:
         """批量执行HTTP请求(共享会话方式)
 
         特点:使用共享的TCP连接器和ClientSession,大幅减少连接建立的开销
@@ -107,7 +105,7 @@ class AsyncHttpClient:
             coros = [task.multi_start(client) for task in tasks]
             return await asyncio.gather(*coros, return_exceptions=True)
 
-    async def request_batch(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[ACResponse | BaseException]:
+    async def batch_request(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[ACResponse | BaseException]:
         """批量执行HTTP请求(分批处理方式)
 
         特点:将请求分成多个批次执行,每批次不超过max_concurrent个请求
@@ -168,27 +166,19 @@ class AsyncTask:
         Raises:
             ValueError: 当请求方法不在支持列表中时
         """
-        if method.lower() in REQUEST_METHODS:
-            self.method = method.lower()
-            return self.create
-        raise ValueError(f'未知的请求方法: {method},支持的方法: {REQUEST_METHODS}')
+        if method.lower() not in REQUEST_METHODS:
+            raise ValueError(f'未知的HTTP请求方法: {method}')
+
+        self.method = method.lower()
+        return self.create
 
     def __getattr__(self, method: str):
-        """通过属性访问方式获取请求方法处理器
-
-        用法示例: task.get(url) 或 task.post(url, data=payload)
-
-        Args:
-            method: HTTP请求方法
-
-        Returns:
-            Callable: 配置请求参数的方法
-        """
+        """通过属性访问方式获取请求方法处理器"""
         return self.__getitem__(method)
 
     def __repr__(self):
         """返回任务的字符串表示形式,方便调试和日志记录"""
-        return f'AsyncTask | Method:{self.method} | Index:{self.index} | URL:{self.url}'
+        return f'AsyncTask | Method:{self.method} | Id:{self.index} | Url:{self.url}'
 
     def create(self, url: str, *args, **kwargs) -> AsyncTask:
         """创建并配置异步请求任务
@@ -214,33 +204,7 @@ class AsyncTask:
         self.kwargs = kwargs
         return self
 
-    @TRETRY
-    async def _fetch(self) -> tuple[ClientResponse | None, bytes | str]:
-        """执行HTTP请求,内部方法
-
-        使用独立的ClientSession执行请求,自动重试失败的请求
-
-        Returns:
-            ACResponse: 统一的响应对象,包含状态码、头部和内容
-
-        Raises:
-            可能抛出的异常包括网络错误、超时、HTTP错误等
-        """
-        async with (
-            ClientSession(cookies=self.cookies, connector=TCPConnector(ssl=False), timeout=ClientTimeout(total=TIMEOUT)) as session,
-            session.request(
-                self.method,
-                self.url,
-                *self.args,
-                raise_for_status=True,  # ! 修改为False，让程序能获取到真实的HTTP状态码反馈
-                **self.kwargs,
-            ) as response,
-        ):
-            content = await response.content.read()
-            # 即使状态码不是200，也要返回响应对象，以便获取真实反馈
-            return response, content
-
-    @log_wraps
+    @spider_retry
     async def start(self) -> ACResponse:
         """启动单任务执行
 
@@ -249,11 +213,21 @@ class AsyncTask:
         Returns:
             ACResponse: 统一的响应对象,包含状态码、头部和内容
         """
+        async with (
+            ClientSession(cookies=self.cookies, connector=TCPConnector(ssl=False), timeout=ClientTimeout(total=TIMEOUT)) as session,
+            session.request(
+                self.method,
+                self.url,
+                *self.args,
+                raise_for_status=True,
+                **self.kwargs,
+            ) as response,
+        ):
+            content = await response.read()
+            result = ACResponse(response, content, self.index, self.url)
+        return self.callback(result) if callable(self.callback) else result
 
-        response, content = await self._fetch()
-        return ACResponse(response, content, self.index, self.url)
-
-    @TRETRY
+    @spider_retry
     async def multi_start(self, client: ClientSession) -> ACResponse:
         """在共享会话中执行任务
 
@@ -265,13 +239,15 @@ class AsyncTask:
         Returns:
             ACResponse: 统一的响应对象
         """
-        try:
-            async with client.request(self.method, self.url, *self.args, raise_for_status=True, **self.kwargs) as response:
-                content = await response.content.read()
-                result = ACResponse(response, content, self.index, self.url)
-        except Exception as err:
-            handle_exception(err)
-            result = ACResponse(None, f'{type(err).__name__}({err!s})', self.index, self.url)
+        async with client.request(
+            self.method,
+            self.url,
+            *self.args,
+            raise_for_status=True,
+            **self.kwargs,
+        ) as response:
+            content = await response.read()
+            result = ACResponse(response, content, self.index, self.url)
         return self.callback(result) if callable(self.callback) else result
 
 
@@ -290,9 +266,12 @@ def single_parse(method: str, url: str, *args, **kwargs) -> ACResponse:
 
     Returns:
         ACResponse: 响应对象
+
+    Raises:
+        ValueError: 当请求方法不在支持列表中时
     """
     if method.lower() not in REQUEST_METHODS:
-        return ACResponse(None, f'不支持的请求方法:{method}', id(url), url)
+        raise ValueError(f'未知的HTTP请求方法: {method}')
     # 使用全局默认客户端处理请求
     return asyncio.run(_default_client.request(method, url, *args, **kwargs))
 
@@ -305,19 +284,27 @@ def multi_parse(method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[A
         urls: URL列表
         *args: 额外位置参数
         **kwargs: 额外关键字参数
+        - force_sequential: 是否共享会话方式,默认False,
+            当为True时,使用共享会话方式执行请求,
+            否则使用分批处理方式执行请求,
+            建议在批量请求场景下使用分批处理方式,
+            以避免会话超时问题。
 
     Returns:
         Sequence[ACResponse | BaseException]: 响应对象或异常的序列
+
+    Raises:
+        ValueError: 当请求方法不在支持列表中时
     """
     if method.lower() not in REQUEST_METHODS:
-        return [ACResponse(None, f'不支持的请求方法:{method}', 0)]
+        raise ValueError(f'未知的HTTP请求方法: {method}')
 
     force_sequential = kwargs.pop('force_sequential', False)
 
     if force_sequential:
-        return asyncio.run(_default_client.request_multi(method, urls, *args, **kwargs))
+        return asyncio.run(_default_client.multi_request(method, urls, *args, **kwargs))
 
-    return asyncio.run(_default_client.request_batch(method, urls, *args, **kwargs))
+    return asyncio.run(_default_client.batch_request(method, urls, *args, **kwargs))
 
 
 # 快捷函数 - 提供更简单的API接口
@@ -327,140 +314,9 @@ ahttp_get_all = partial(multi_parse, 'get')
 ahttp_post_all = partial(multi_parse, 'post')
 ahttp_get_all_sequential = partial(multi_parse, 'get', max_concurrency=24, force_sequential=True)
 
-# 为保持与xt_ahttp.py的兼容性
-ahttpGet = ahttp_get  # 兼容驼峰命名  # noqa: N816
-ahttpPost = ahttp_post  # 兼容驼峰命名  # noqa: N816
-ahttpGetAll = ahttp_get_all  # 兼容驼峰命名  # noqa: N816
-ahttpPostAll = ahttp_post_all  # 兼容驼峰命名  # noqa: N816
-
-
-class AHttpLoop:
-    """异步HTTP客户端 - 使用loop实现"""
-
-    def __init__(self, max_concurrent: int = 10):
-        self.method: str = ''  # 保存请求方法
-        self.max_concurrent: int = max_concurrent  # 最大并发请求数
-        # 获取或创建事件循环
-        self._loop = self.get_loop()
-        self._session = self.get_session()
-
-    def get_loop(self) -> asyncio.AbstractEventLoop:
-        """返回事件循环"""
-        try:
-            self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-        return self._loop
-
-    def get_session(self) -> ClientSession:
-        """返回会话"""
-        try:
-            session = self._loop.run_until_complete(self.create_session())
-        except Exception as err:
-            session = None
-            return handle_exception(err, re_raise=True)
-        return session
-
-    async def __aenter__(self):
-        """异步上下文管理器入口"""
-        self._session = await self.create_session()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """异步上下文管理器退出，确保会话关闭"""
-        if self._session:
-            await self._session.close()
-            self._session = None
-
-    async def create_session(self) -> ClientSession:
-        """创建并返回一个配置好的ClientSession"""
-        return ClientSession(
-            connector=TCPConnector(ssl=False, limit=self.max_concurrent),
-            timeout=ClientTimeout(total=TIMEOUT),
-        )
-
-    async def close_session(self) -> None:
-        """异步关闭会话"""
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, _exc_type, _exc_val, _exc_tb):
-        """关闭会话"""
-        self._loop.run_until_complete(self.close_session())
-
-    def close(self) -> None:
-        """同步关闭方法"""
-        if self._session and not self._session.closed:
-            try:
-                self._loop.run_until_complete(self._session.close())
-            except RuntimeError as err:
-                # 如果事件循环已关闭，创建新的循环执行关闭
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self._session.close())
-                loop.close()
-                handle_exception(err, re_raise=True)
-            finally:
-                self._session = None
-        return
-
-    def __del__(self):
-        """析构函数，确保资源释放"""
-        self.close()
-
-    def __getitem__(self, method: str) -> Callable:
-        self.method = method.lower()  # 保存请求方法
-        return self._make_parse
-
-    def __getattr__(self, method: str) -> Callable:
-        return self.__getitem__(method)
-
-    def _make_parse(self, url: str, **kwargs) -> ACResponse:
-        index = kwargs.pop('index', id(url))
-        return self._loop.run_until_complete(self._retry_request(url, index=index, **kwargs))
-
-    @log_wraps
-    async def _retry_request(self, url: str, index: int | None = None, **kwargs) -> ACResponse:
-        kwargs.setdefault('headers', Head().randua)
-        kwargs.setdefault('timeout', ClientTimeout(TIMEOUT))
-        index = index if index is not None else id(url)
-        _ = kwargs.pop('callback', None)
-
-        @TRETRY
-        async def _single_fetch() -> tuple:
-            if self._session is None:
-                self._session = await self.create_session()
-            async with self._session.request(self.method, url, raise_for_status=True, **kwargs) as response:
-                content = await response.content.read()
-                return response, content
-
-        try:
-            response, content = await _single_fetch()
-            return ACResponse(response, content, index, url)
-        except Exception as err:
-            handle_exception(err)
-            return ACResponse(None, f'{type(err).__name__}({err!s})', index, url)
-
-    async def _multi_fetch(self, method: str, urls_list: Sequence[str], **kwargs):
-        self.method = method
-        task_list = [self._retry_request(url, index=index, **kwargs) for index, url in enumerate(urls_list)]
-        return await asyncio.gather(*task_list, return_exceptions=True)
-
-    def getall(self, urls_list: Sequence[str], **kwargs):
-        return self._loop.run_until_complete(self._multi_fetch('get', urls_list, **kwargs))
-
-    def postall(self, urls_list: Sequence[str], **kwargs):
-        return self._loop.run_until_complete(self._multi_fetch('post', urls_list, **kwargs))
-
 
 if __name__ == '__main__':
     """示例用法和测试代码"""
-    from nsthread import thread_print
 
     # 测试URL列表
     urls = ('https://www.163.com', 'https://www.qq.com', 'https://www.126.com', 'https://httpbin.org/post')
@@ -468,32 +324,26 @@ if __name__ == '__main__':
     def main():
         """主测试函数"""
         # 使用便捷函数发送单个GET请求
-        # thread_print('发送单个GET请求...', ahttp_get(urls[0]))
+        print('发送单个GET请求...', '\n', ahttp_get(urls[0]))
 
         # 使用便捷函数发送多个GET请求
-        thread_print('ahttp_get_all 发送多个GET请求...', ahttp_get_all(urls, force_sequential=False))
+        print('ahttp_get_all 发送多个GET请求...', '\n', ahttp_get_all(urls, force_sequential=False))
 
         # 发送POST请求
-        # thread_print('发送POST请求...', ahttp_post(urls[3], data=b'test_data'))
-
-    def test_ahttploop():
-        ahc = AHttpLoop()
-        thread_print(111111, ahc.get('https://www.163.com'))
-        thread_print(222222, ahc.getall(['https://www.163.com', 'https://httpbin.org/post']))
+        print('发送POST请求...', '\n', ahttp_post(urls[3], data=b'test_data'))
 
     async def demo_async_client():
         """演示AsyncHttpClient的异步用法"""
         client = _default_client
 
         # 单个请求
-        thread_print('\nclient.request:', await client.request('get', urls[3]))
+        print('client.request:', '\n', await client.request('get', urls[3]))
 
         # 批量请求(共享会话方式)
-        thread_print('\nclient.request_multi(共享会话):', await client.request_multi('get', urls[2:4]))
+        print('client.multi_request(共享会话):', '\n', await client.multi_request('get', urls[2:4]))
 
         # 批量请求(分批处理方式)
-        thread_print('\nclient.request_batch(分批处理):', await client.request_batch('get', urls[2:4]))
+        print('client.batch_request(分批处理):', '\n', await client.batch_request('get', urls[2:4]))
 
-    # main()
-    # test_ahttploop()
+    main()
     asyncio.run(demo_async_client())

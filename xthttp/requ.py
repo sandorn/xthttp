@@ -27,19 +27,17 @@ from functools import partial
 from typing import Any
 
 import requests
-from nswrapslite.log import logging_wraps as log_wraps
-from nswrapslite.retry import retry_wraps
-from resp import HttpError, RespFactory, UnifiedResp as htmlResponse
+from nswrapslite.retry import spider_retry
+from resp import UnifiedResp as htmlResponse
 from xt_head import TIMEOUT, Head
-from xtlog import mylog
 
 # 支持的HTTP请求方法
-supported_request_methods = ('get', 'post', 'head', 'options', 'put', 'delete', 'trace', 'connect', 'patch')
+REQUEST_METHODS = ('get', 'post', 'head', 'options', 'put', 'delete', 'trace', 'connect', 'patch')
 
 
-@retry_wraps
+@spider_retry
 def _retry_request(method: str, url: str, *args: Any, **kwargs: Any) -> htmlResponse:
-    """利用retry_wraps实现请求重试机制
+    """利用spider_retry实现请求重试机制
 
     Args:
         method: HTTP请求方法
@@ -61,20 +59,9 @@ def _retry_request(method: str, url: str, *args: Any, **kwargs: Any) -> htmlResp
     index = kwargs.pop('index', id(url))
     timeout = kwargs.pop('timeout', TIMEOUT)
 
-    try:
-        response = requests.request(method, url, *args, timeout=timeout, **kwargs)
-        # 创建统一响应对象
-        unified_resp = htmlResponse(response, response.content, index, url)
-        # response.raise_for_status()
-
-        if kwargs.pop('check_status', True) and not RespFactory.is_success(unified_resp):
-            raise HttpError(unified_resp)
-
-        return unified_resp
-    except requests.exceptions.RequestException as e:
-        mylog.error(f'Request failed: {method} {url}, error: {e!s}')
-        # 传递原始异常信息
-        return htmlResponse(None, str(e).encode(), index, url=url, exception=e)
+    response = requests.request(method, url, *args, timeout=timeout, **kwargs)
+    response.raise_for_status()
+    return htmlResponse(response, response.content, index, url)
 
 
 def single_parse(method: str, url: str, *args: Any, **kwargs: Any) -> htmlResponse:
@@ -94,10 +81,8 @@ def single_parse(method: str, url: str, *args: Any, **kwargs: Any) -> htmlRespon
     """
     method_lower = method.lower()
 
-    if method_lower not in supported_request_methods:
-        error_msg = f'Method:{method} not in supported_request_methods'
-        mylog.warning(error_msg)
-        return htmlResponse(None, error_msg.encode(), id(url), url)
+    if method_lower not in REQUEST_METHODS:
+        raise ValueError(f'未知的HTTP请求方法: {method}')
 
     # 设置默认参数
     kwargs.setdefault('headers', Head().randua)  # 自动设置随机User-Agent
@@ -173,7 +158,6 @@ class SessionClient:
         """
         return self.__getitem__(method)
 
-    @log_wraps
     def create_task(self, *args, **kwargs) -> htmlResponse:
         """创建并执行请求任务
 
@@ -187,13 +171,14 @@ class SessionClient:
 
         Returns:
             htmlResponse: 包装后的响应对象
+
+        Raises:
+            ValueError: 当请求方法不在支持列表中时
         """
         self.url = args[0]
 
-        if self.method not in supported_request_methods:
-            error_msg = f'Method:{self.method} not in {supported_request_methods}'
-            mylog.warning(error_msg)
-            return htmlResponse(None, error_msg.encode(), id(self.url), self.url)
+        if self.method not in REQUEST_METHODS:
+            raise ValueError(f'未知的HTTP请求方法: {self.method}')
 
         self.args = args[1:]
 
@@ -208,7 +193,7 @@ class SessionClient:
 
         return self._fetch()
 
-    @retry_wraps
+    @spider_retry
     def _fetch(self) -> htmlResponse:
         """执行请求并处理响应
 
@@ -216,7 +201,7 @@ class SessionClient:
             htmlResponse: 包装后的响应对象
         """
         response = self.session.request(self.method, self.url, *self.args, **self.kwargs)
-        # 自动更新Cookie
+        response.raise_for_status()
         self.update_cookies(dict(response.cookies))
         return htmlResponse(response, response.content, id(self.url), self.url)
 
@@ -242,45 +227,49 @@ if __name__ == '__main__':
 
     def basic_request_example():
         """基础请求示例"""
-        # 简单GET请求
-        mylog.info('执行简单GET请求')
-        response = get('http://www.163.com')
-        if isinstance(response, htmlResponse):
-            mylog.success(f'请求成功,状态码: {response.status}')
-            # 解析响应内容
-            content = response.text
-            mylog.debug(f'响应内容长度: {len(content)} 字符')
-            mylog.info('xpath(//title/text()):', response.xpath('//title/text()'))
-            mylog.info('xpath([//title/text(), //title/text()]):', response.xpath('//title/text()', '//title/text()'))
-            mylog.info('//title/text():', response.xpath('//title/text()', '', ' '))
-            mylog.info('xpath( ):', response.xpath(' '))
-            mylog.info('xpath():', response.xpath(''))
-            mylog.info('dom.xpath(//title/text()):', response.dom.xpath('//title/text()'))
-            mylog.info('query(title).text():', response.query('title').text())
+
+        @spider_retry(max_retries=2, delay=0.5, custom_message='测试爬虫请求')
+        def make_spider_request(url):
+            """模拟爬虫请求函数"""
+            print(f'发送请求到: {url}')
+            return get(url, timeout=3)
+
+        # 测试成功的请求
+        print('\n--- 成功的爬虫请求示例 ---')
+        result1 = make_spider_request('https://httpbin.org/get')
+        print(f'请求结果1: {type(result1).__name__}({result1})')
+
+        # 测试超时的请求
+        print('\n--- 超时的爬虫请求示例 ---')
+        result2 = make_spider_request('https://httpbin.org/delay/10')  # 这个接口会延迟10秒响应
+        print(f'请求结果2: {type(result2).__name__}({result2})')
+
+        # 测试404错误的请求
+        print('\n--- 404错误的爬虫请求示例 ---')
+        result3 = make_spider_request('https://httpbin.org/status/404')
+        print(f'请求结果3: {type(result3).__name__}({result3})')
 
     def session_example():
         """会话请求示例"""
-        mylog.info('执行会话请求')
+        print('执行会话请求')
         # 使用上下文管理器创建会话
         with SessionClient() as client:
-            # 第一次请求,设置Cookie
-            client.get('https://httpbin.org/cookies/set?name=value')
-            # 第二次请求,会自动携带Cookie
-            response = client.get('https://httpbin.org/cookies')
-            if isinstance(response, htmlResponse):
-                try:
-                    # 使用标准json模块解析JSON数据
-                    import json
+            result1 = client.get('https://httpbin.org/get')
+            print(f'请求结果1: {type(result1).__name__}({result1})')
 
-                    cookies = json.loads(response.text).get('cookies', {})
-                    mylog.success(f'会话Cookie: {cookies}')
-                except Exception as e:
-                    mylog.error(f'解析Cookie失败: {e!s}')
-                    mylog.debug(f'响应内容: {response.text[:100]}...')
+            # 测试超时的请求
+            print('\n--- 超时的爬虫请求示例 ---')
+            result2 = client.get('https://httpbin.org/delay/10', timeout=1)  # 这个接口会延迟10秒响应
+            print(f'请求结果2: {type(result2).__name__}({result2})')
+
+            # 测试404错误的请求
+            print('\n--- 404错误的爬虫请求示例 ---')
+            result3 = client.get('https://httpbin.org/status/404')
+            print(f'请求结果3: {type(result3).__name__}({result3})')
 
     def post_request_example():
         """POST请求示例"""
-        mylog.info('执行POST请求')
+        print('执行POST请求')
         data = {'key1': 'value1', 'key2': 'value2'}
         response = post('https://httpbin.org/post', data=data)
         if isinstance(response, htmlResponse):
@@ -290,18 +279,14 @@ if __name__ == '__main__':
 
                 json_data = json.loads(response.text)
                 form_data = json_data.get('form', {})
-                mylog.success(f'POST数据接收: {form_data}')
+                print(f'POST数据接收: {form_data}')
             except Exception as e:
-                mylog.error(f'解析POST响应失败: {e!s}')
-                mylog.debug(f'响应内容: {response.text[:100]}...')
+                print(f'解析POST响应失败: {e!s}')
+                print(f'响应内容: {response.text[:100]}...')
 
     # 执行示例
-    mylog.info('=== HTTP请求工具模块测试开始 ===')
-    try:
-        basic_request_example()
-        session_example()
-        post_request_example()
-        mylog.info(get('https://httpbin.org/post'))
-        mylog.success('=== HTTP请求工具模块测试完成 ===')
-    except Exception as e:
-        mylog.error(f'测试过程中发生错误: {e!s}')
+    print('=== HTTP请求工具模块测试开始 ===')
+    # basic_request_example()
+    session_example()
+    post_request_example()
+    print('=== HTTP请求工具模块测试完成 ===')
