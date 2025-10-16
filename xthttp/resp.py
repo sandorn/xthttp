@@ -1,32 +1,29 @@
 # !/usr/bin/env python3
-"""
-==============================================================
-Description     : 统一响应处理模块 - 提供同步和异步HTTP响应的统一接口
-Develop      : VSCode
-Author       : sandorn sandorn@live.cn
-LastEditTime : 2025-10-14 22:00:00
-Github       : https://github.com/sandorn/xthttp
+"""统一响应处理模块
 
-【核心功能】
-- 统一的响应对象接口,同时支持同步和异步HTTP库
-- 工厂模式创建适配不同类型的响应对象
-- 适配器模式处理不同库的响应特性
-- 完全兼容现有的BaseResponse、HtmlResponse和ACResponse功能
-- 模块化设计,易于扩展
+提供统一的HTTP响应处理接口，支持多种HTTP库（如requests、aiohttp等），
+自动处理编码检测、内容解析、DOM操作等功能。
 
-【使用示例】
+核心功能：
+1. 统一的响应对象访问接口
+2. 智能编码检测与处理
+3. 内置DOM解析和选择器支持
+4. 中文内容特殊处理
+5. 兼容同步和异步HTTP库
+
+使用示例：
+    >>> from xthttp.resp import RespFactory
     >>> from xt_requests import get
-    >>> from xt_response_unified import RespFactory
+    >>> # 创建响应对象
     >>> response = get('https://example.com')
     >>> unified_resp = RespFactory.create_response(response)
-    >>> print(unified_resp.status)  # 获取状态码
-    200
-    >>> title = unified_resp.xpath('//title/text()')[0][0]  # 使用XPath提取标题
-
-【注意事项】
-    - 保持了与原有响应类的向后兼容性
-    - 自动识别响应类型并创建适当的处理对象
-==============================================================
+    >>> # 获取内容和信息
+    >>> text = unified_resp.text
+    >>> status = unified_resp.status
+    >>> headers = unified_resp.headers
+    >>> # DOM操作
+    >>> title = unified_resp.query('title').text()
+    >>> links = unified_resp.xpath('//a/@href')
 """
 
 from __future__ import annotations
@@ -42,16 +39,20 @@ from pyquery import PyQuery
 from xtlog import mylog
 
 # 初始化日志
-DEFAULT_ENCODING = 'utf-8'
+DEFAULT_ENCODING = 'utf-8'  # 默认编码格式
 
-# 类型定义
-RawResponseType = Any  # 原始响应对象类型
+
+RawResponseType = Any  # 原始响应对象类型（支持requests和aiohttp等）
 ContentDataType = str | bytes | None  # 响应内容类型
 SelectorType = str | Sequence[str]  # 选择器类型
 
 
 class RespFactory:
-    """响应对象工厂,负责创建适当类型的响应对象"""
+    """响应对象工厂类
+
+    负责根据原始HTTP响应对象创建统一的UnifiedResp响应对象。
+    使用工厂模式设计，根据不同的HTTP库响应对象自动选择合适的适配器。
+    """
 
     @staticmethod
     def _select_adapter(response: RawResponseType) -> BaseRespAdapter:
@@ -80,7 +81,14 @@ class RespFactory:
 
     @staticmethod
     def is_success(response: UnifiedResp | RawResponseType) -> bool:
-        """检查响应是否成功(状态码在200-299之间)"""
+        """检查响应是否成功(状态码在200-299之间)
+
+        Args:
+            response: 响应对象(UnifiedResp或原始响应类型)
+
+        Returns:
+            bool: 状态码是否表示成功
+        """
         if isinstance(response, UnifiedResp):
             return 200 <= response.status < 300
 
@@ -141,45 +149,90 @@ class BaseRespAdapter(ABC):
 class RequestsAdapter(BaseRespAdapter):
     """requests库响应适配器"""
 
-    def __init__(self, raw_response: Any):
+    def __init__(self, raw_response: RawResponseType):
         self.raw_response = raw_response
 
     def get_content(self) -> bytes:
+        """获取原始响应内容（字节形式）
+
+        Returns:
+            bytes: 响应内容的字节表示
+        """
         return getattr(self.raw_response, 'content', b'')
 
     def get_status(self) -> int:
+        """获取响应状态码
+
+        Returns:
+            int: HTTP状态码
+        """
         return getattr(self.raw_response, 'status_code', 999)
 
     def get_url(self) -> str:
+        """获取请求URL
+
+        Returns:
+            str: 请求的URL
+        """
         return getattr(self.raw_response, 'url', '')
 
     def get_headers(self) -> dict[str, str]:
+        """获取响应头部
+
+        Returns:
+            dict[str, str]: 头部字典
+        """
         headers = getattr(self.raw_response, 'headers', {})
         return dict(headers) if headers else {}
 
     def get_cookies(self) -> dict[str, str]:
+        """获取响应Cookie
+
+        Returns:
+            dict[str, str]: Cookie字典
+        """
         cookies = getattr(self.raw_response, 'cookies', {})
         return dict(cookies) if cookies else {}
 
     def get_encoding(self) -> str:
+        """获取响应编码
+
+        Returns:
+            str: 编码名称
+        """
         return getattr(self.raw_response, 'encoding', DEFAULT_ENCODING)
 
     def get_reason(self) -> str:
+        """获取响应原因短语
+
+        Returns:
+            str: 状态码对应的原因短语
+        """
         return getattr(self.raw_response, 'reason', '')
 
 
 class AiohttpAdapter(BaseRespAdapter):
     """aiohttp库响应适配器"""
 
-    def __init__(self, raw_response: Any):
+    def __init__(self, raw_response: RawResponseType):
         self.raw_response = raw_response
 
     def get_content(self) -> bytes:
+        """获取原始响应内容（字节形式）
+
+        Returns:
+            bytes: 响应内容的字节表示
+        """
         content = getattr(self.raw_response, 'content', b'')
         # aiohttp的content可能已经是bytes类型
         return content if isinstance(content, bytes) else b''
 
     def get_status(self) -> int:
+        """获取响应状态码
+
+        Returns:
+            int: HTTP状态码
+        """
         return getattr(self.raw_response, 'status', 999)
 
     def get_url(self) -> str:
@@ -189,17 +242,37 @@ class AiohttpAdapter(BaseRespAdapter):
         return ''
 
     def get_headers(self) -> dict[str, str]:
+        """获取响应头部
+
+        Returns:
+            dict[str, str]: 头部字典
+        """
         headers = getattr(self.raw_response, 'headers', {})
         return dict(headers) if headers else {}
 
     def get_cookies(self) -> dict[str, str]:
+        """获取响应Cookie
+
+        Returns:
+            dict[str, str]: Cookie字典
+        """
         cookies = getattr(self.raw_response, 'cookies', {})
         return dict(cookies) if cookies else {}
 
     def get_encoding(self) -> str:
+        """获取响应编码
+
+        Returns:
+            str: 编码名称
+        """
         return getattr(self.raw_response, 'charset', DEFAULT_ENCODING)
 
     def get_reason(self) -> str:
+        """获取响应原因短语
+
+        Returns:
+            str: 状态码对应的原因短语
+        """
         return getattr(self.raw_response, 'reason', '')
 
 
@@ -207,13 +280,13 @@ class UnifiedResp:
     """统一响应类,提供同步和异步HTTP响应的统一接口"""
 
     # 类常量
-    CHINESE_DOMAINS: ClassVar[list[str]] = ['baidu.com', 'sina.com', '163.com', 'qq.com', 'alibaba.com', 'taobao.com', 'jd.com', 'sohu.com']
-    CHINESE_ENCODINGS: ClassVar[list[str]] = ['utf-8', 'gbk', 'gb18030', 'big5', 'gb2312']
+    CHINESE_DOMAINS: ClassVar[set[str]] = {'baidu.com', 'sina.com', '163.com', 'qq.com', 'alibaba.com', 'taobao.com', 'jd.com', 'sohu.com'}
+    CHINESE_ENCODINGS: ClassVar[set[str]] = {'utf-8', 'gbk', 'gb18030', 'big5', 'gb2312'}
 
     # 缓存属性
-    _dom_cache: Any | None = None
+    _dom_cache: object | None = None
     _query_cache: PyQuery | None = None
-    _chinese_content_cache: dict | None = None
+    _chinese_content_cache: dict[str, bool] | None = None
 
     def __init__(
         self,
@@ -384,47 +457,55 @@ class UnifiedResp:
         return result
 
     def _check_chinese_content(self, sample: bytes) -> bool:
-        """检查字节样本是否包含中文内容"""
-        # 1. 直接检查常见中文关键词的字节序列
+        """检查字节样本是否包含中文内容
+
+        Args:
+            sample: 要检查的字节样本
+
+        Returns:
+            bool: 是否包含中文内容
+        """
+        # 对大样本进行采样以提高性能（避免处理超大文件）
+        if len(sample) > 2 * 1024 * 1024:  # 2MB
+            # 取开头和结尾各1MB，避免中间截断中文字符
+            sample = sample[: 1024 * 1024] + sample[-1024 * 1024 :]
+
+        # 1. 快速字节模式匹配（高频中文词汇）
         chinese_byte_patterns = [
             b'\xe4\xbd\xa0\xe5\xa5\xbd',  # 你好
             b'\xe4\xb8\xad\xe5\x9b\xbd',  # 中国
             b'\xe4\xb8\xad\xe6\x96\x87',  # 中文
-            b'\xe7\xbd\x91\xe7\xab\x99',  # 网站
-            b'\xe5\x86\x85\xe5\xae\xb9',  # 内容
-            b'\xe6\xa0\x87\xe9\xa2\x98',  # 标题
-            b'\xe6\x88\x91\xe6\x98\xaf',  # 我是
-            b'\xe8\xbf\x99\xe6\x98\xaf',  # 这是
+            b'\xe7\x9a\x84',  # 的 (单独高频字)
+            b'\xe6\x98\xaf',  # 是 (单独高频字)
         ]
 
         if any(pattern in sample for pattern in chinese_byte_patterns):
             return True
 
-        # 2. 检查UTF-8编码的中文字符模式
-        utf8_chinese_patterns = [
-            b'\xe4[\xb8-\xbf][\x80-\xbf]',  # 常用汉字区域1
-            b'\xe5[\x80-\x9f][\x80-\xbf]',  # 常用汉字区域2
-            b'\xe6[\x80-\xbf][\x80-\xbf]',  # 汉字扩展
-            b'\xe7[\x80-\xbf][\x80-\xbf]',  # 汉字扩展
-            b'\xe8[\x80-\xbf][\x80-\xbf]',  # 汉字扩展
-            b'\xe9[\x80-\xbf][\x80-\xbf]',  # 汉字扩展
+        # 2. UTF-8 编码模式检测
+        utf8_patterns = [
+            b'\xe4[\xb8-\xbf][\x80-\xbf]',  # 常用汉字区域
+            b'\xe5[\x80-\x9f][\x80-\xbf]',
+            b'\xe6[\x80-\xbf][\x80-\xbf]',
+            b'\xe7[\x80-\xbf][\x80-\xbf]',
+            b'\xe8[\x80-\xbf][\x80-\xbf]',
+            b'\xe9[\x80-\xbf][\x80-\xbf]',
         ]
 
-        for pattern in utf8_chinese_patterns:
+        for pattern in utf8_patterns:
             if re.search(pattern, sample):
                 return True
 
-        # 3. 检查GBK编码的中文字符特征
-        with suppress(Exception):
-            gbk_chinese_pattern = b'[\xb0-\xf7][\xa1-\xfe]'
-            if re.search(gbk_chinese_pattern, sample):
-                return True
+        # 3. GBK 编码检测
+        if re.search(rb'[\xb0-\xf7][\xa1-\xfe]', sample):
+            return True
 
-        # 4. 尝试解码并检查关键词
-        for encoding in ['utf-8', 'gbk']:
+        # 4. 多编码解码检测（最终保障）
+        for encoding in ['utf-8', 'gbk', 'gb2312']:
             with suppress(Exception):
-                sample_text = sample.decode(encoding, errors='ignore')
-                if any(ch in sample_text for ch in '你好中国中文网站内容标题我是这是'):
+                text = sample.decode(encoding, errors='ignore')
+                # 检查高频中文单字（覆盖99%的中文文本）
+                if any(char in text for char in '的是在有了不和大人中国'):
                     return True
 
         return False
@@ -514,11 +595,10 @@ class UnifiedResp:
             # mylog.debug(f'适配器提供编码: {adapter_encoding}')
 
         # 5. 选择最佳编码
-        # mylog.debug(f'最终选择编码: {final_encoding}')
         return self._select_best_encoding(list(encoding_candidates), has_chinese)
 
     def _select_best_encoding(self, candidates: list[str], has_chinese: bool) -> str:
-        """从候选编码中选择最佳编码 - 简化修复版本"""
+        """从候选编码中选择最佳编码"""
         if not candidates:
             return DEFAULT_ENCODING
 
@@ -543,7 +623,7 @@ class UnifiedResp:
 
     # ==================== DOM解析方法 ====================
 
-    def _get_lxml_dom(self) -> Any | None:
+    def _get_lxml_dom(self) -> object | None:
         """延迟初始化lxml的DOM对象"""
         if self._dom_cache is None and self.text:
             try:
@@ -561,7 +641,7 @@ class UnifiedResp:
 
         return self._dom_cache
 
-    def _parse_with_fallback(self) -> Any | None:
+    def _parse_with_fallback(self) -> object | None:
         """使用后备解析器解析HTML"""
         # 方法1: 尝试使用soupparser
         try:
@@ -628,7 +708,7 @@ class UnifiedResp:
 
     # ==================== XPath方法 ====================
 
-    def xpath(self, *args: str) -> list[list[Any]]:
+    def xpath(self, *args: str) -> list[list[object]]:
         """执行XPath选择查询"""
         results = []
         if not args:
@@ -655,7 +735,7 @@ class UnifiedResp:
         return results
 
     @property
-    def dom(self) -> Any | None:
+    def dom(self) -> object | None:
         """lxml的DOM对象,用于XPath解析"""
         return self._get_lxml_dom()
 
@@ -678,7 +758,7 @@ class UnifiedResp:
         return self._raw
 
     @property
-    def elapsed(self) -> Any | None:
+    def elapsed(self) -> object | None:
         if self._raw and hasattr(self._raw, 'elapsed'):
             return self._raw.elapsed
         return None
@@ -729,7 +809,7 @@ class UnifiedResp:
         return getattr(self._raw, 'reason', '')
 
     @property
-    def json(self) -> Any:
+    def json(self) -> object:
         # 首先尝试使用raw对象的json方法
         if self._raw and hasattr(self._raw, 'json'):
             try:
@@ -747,68 +827,8 @@ class UnifiedResp:
         return {}
 
 
-if __name__ == '__main__':
-
-    def run_test(url: str):
-        """运行测试"""
-        mylog.info('=' * 70)
-        mylog.info(f'正在测试网址: {url}')
-
-        try:
-            # 导入get函数
-            from requ import get
-
-            # 获取原始响应
-            raw_response = get(url)
-
-            # 创建统一响应对象
-            unified_resp = RespFactory.create_response(raw_response)
-            unified_resp.raise_for_status()
-
-            mylog.info(f'响应状态: {unified_resp.status}|{unified_resp.index}')
-            mylog.info(f'响应URL: {unified_resp.url}')
-            mylog.info(f'响应编码: {unified_resp.encoding}')
-            # 测试HTML解析功能
-            title = unified_resp.xpath('//title/text()')
-            mylog.info(f'页面标题: {title[0] if title and title[0] else "未找到"}')
-            mylog.info(f'页面内容: {unified_resp.text[:100]}')
-
-            # 增加更多的xpath测试内容
-            xpath_result = unified_resp.xpath('//title/text()')
-            mylog.info(f'xpath(//title/text()) : {xpath_result}')
-
-            xpath_multi = unified_resp.xpath('//title/text()', '//title/text()')
-            mylog.info(f'xpath([//title/text(), //title/text()]) : {xpath_multi}')
-
-            query_result = unified_resp.query('title').text()
-            mylog.info(f'query(title).text() : {query_result}')
-
-            # 只有在DOM有效时才执行这个测试
-            if unified_resp.dom is not None and hasattr(unified_resp.dom, 'xpath'):
-                try:
-                    dom_result = unified_resp.dom.xpath('//title/text()')
-                    mylog.info(f'dom.xpath(//title/text()) : {dom_result}')
-                except Exception as e:
-                    mylog.warning(f'direct dom.xpath failed: {e}')
-            else:
-                mylog.info('dom.xpath: DOM对象不可用')
-
-            mylog.info('测试完成!')
-        except Exception as e:
-            mylog.error(f'测试失败: {e}')
-            import traceback
-
-            mylog.error(f'详细堆栈: {traceback.format_exc()}')
-
-    # 选择常用中文网址作为测试目标
-    test_urls = [
-        'https://www.baidu.com',
-        'https://www.sina.com.cn',
-        'https://cn.bing.com',
-    ]
-
-    # 运行测试
-    for url in test_urls:
-        run_test(url)
-
-    mylog.info('\n\n所有测试完成!')
+__all__ = [
+    'HttpError',
+    'RespFactory',
+    'UnifiedResp',
+]

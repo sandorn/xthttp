@@ -32,10 +32,12 @@ import asyncio
 from collections.abc import Callable, Sequence
 from functools import partial
 
-from aiohttp import ClientSession, ClientTimeout, TCPConnector
-from headers import TIMEOUT, Head
+from aiohttp import ClientSession, TCPConnector
 from nswrapslite import spider_retry
-from resp import UnifiedResp as ACResponse
+from yarl import URL
+
+from .headers import TIMEOUT_AIOH, Head
+from .resp import UnifiedResp
 
 # 定义模块公开接口
 __all__ = ('AsyncHttpClient', 'ahttp_get', 'ahttp_get_all', 'ahttp_post', 'ahttp_post_all')
@@ -47,8 +49,13 @@ REQUEST_METHODS = ('get', 'post', 'head', 'options', 'put', 'delete', 'trace', '
 class AsyncHttpClient:
     """异步HTTP客户端 - 提供并发控制的HTTP请求管理
 
-    该类实现了并发请求控制、会话共享和批量请求处理,
+    该类实现了并发请求控制和批量请求处理,
     适合需要高效执行大量HTTP请求的场景。
+
+    核心特性：
+    - 并发控制与限制
+    - 超时控制与错误处理
+    - 支持批量请求处理
     """
 
     def __init__(self, max_concurrent: int = 10):
@@ -60,7 +67,7 @@ class AsyncHttpClient:
         self.max_concurrent = max_concurrent
         self.semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def request(self, method: str, url: str, *args, **kwargs) -> ACResponse:
+    async def request(self, method: str, url: str, *args, **kwargs) -> UnifiedResp:
         """执行单个HTTP请求
 
         Args:
@@ -76,57 +83,117 @@ class AsyncHttpClient:
                 - params: URL查询参数
 
         Returns:
-            ACResponse: 包含响应状态、头部和内容的统一响应对象
+            UnifiedResp: 包含响应状态、头部和内容的统一响应对象
         """
         task = getattr(AsyncTask(), method)(url, *args, **kwargs)
         async with self.semaphore:
             return await task.start()
 
-    async def multi_request(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[ACResponse | BaseException]:
+    async def multi_request(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[UnifiedResp | BaseException | None]:
         """批量执行HTTP请求(共享会话方式)
 
         特点:使用共享的TCP连接器和ClientSession,大幅减少连接建立的开销
+        注意：该方法假设传入的URL已经过验证，由multi_parse函数调用
 
         Args:
             method: HTTP方法,如'get'、'post'等
-            urls: 要请求的URL列表
+            urls: 要请求的URL列表(已验证)
             *args: 传递给每个请求的额外位置参数
             **kwargs: 传递给每个请求的额外关键字参数
 
         Returns:
-            Sequence[Union[ACResponse, BaseException]]: 响应对象或异常的序列
+            Sequence[UnifiedResp | BaseException]: 响应对象或异常的序列
         """
-        tasks = [AsyncTask(index)[method](url, *args, **kwargs) for index, url in enumerate(urls)]
+        # 预先分配结果列表，保持原始顺序
+        n = len(urls)
+        results: list[UnifiedResp | BaseException | None] = [None] * n  # 预先分配固定大小的列表
 
-        async with ClientSession(
-            connector=TCPConnector(ssl=False, limit=self.max_concurrent),
-            timeout=ClientTimeout(total=TIMEOUT),
-        ) as client:
-            coros = [task.multi_start(client) for task in tasks]
-            return await asyncio.gather(*coros, return_exceptions=True)
+        # 分离有效URL和无效URL
+        valid_tasks = []  # 存储 (task, original_index)
+        invalid_indices = []  # 存储 (original_index, error)
 
-    async def batch_request(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[ACResponse | BaseException]:
+        # 第一遍遍历：分类URL并记录索引
+        for index, url in enumerate(urls):
+            if isinstance(url, ValueError):
+                # 记录无效URL的位置和错误
+                invalid_indices.append((index, url))
+            else:
+                # 创建有效URL的任务
+                task = AsyncTask(index)[method](url, *args, **kwargs)
+                valid_tasks.append((task, index))
+
+        # 预先设置无效URL的结果
+        for index, error in invalid_indices:
+            results[index] = error
+
+        # 如果有有效URL，创建共享会话并执行
+        if valid_tasks:
+            async with ClientSession(
+                connector=TCPConnector(ssl=False, limit=self.max_concurrent),
+                timeout=TIMEOUT_AIOH,
+            ) as client:
+                # 并发执行所有有效任务
+                batch_results = await asyncio.gather(*[self._request_with_semaphore(task.multi_start, client) for task, _ in valid_tasks], return_exceptions=True)
+
+                # 将有效任务结果放入正确位置
+                for (_, original_index), result in zip(valid_tasks, batch_results, strict=False):
+                    results[original_index] = result
+
+        return results
+
+    async def _request_with_semaphore(self, func, *args, **kwargs):
+        """使用信号量控制并发执行指定函数"""
+        async with self.semaphore:
+            return await func(*args, **kwargs)
+
+    async def batch_request(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[UnifiedResp | BaseException | None]:
         """批量执行HTTP请求(分批处理方式)
 
         特点:将请求分成多个批次执行,每批次不超过max_concurrent个请求
+        适合处理大量URL的场景，可以有效避免连接数过多导致的资源耗尽问题。
+        注意：该方法假设传入的URL已经过验证，由multi_parse函数调用
 
         Args:
             method: HTTP方法
-            urls: 要请求的URL列表
+            urls: 要请求的URL列表(已验证)
             *args: 传递给每个请求的额外位置参数
             **kwargs: 传递给每个请求的额外关键字参数
 
         Returns:
-            Sequence[Union[ACResponse, BaseException]]: 响应对象或异常的序列
+            Sequence[UnifiedResp | BaseException]: 响应对象或异常的序列
         """
-        tasks = [AsyncTask(index)[method](url, *args, **kwargs) for index, url in enumerate(urls)]
+        # 预先分配结果列表，保持原始顺序
+        n = len(urls)
+        results: list[UnifiedResp | BaseException | None] = [None] * n  # 预先分配固定大小的列表
 
-        results = []
-        # 分批处理,避免同时发起过多请求
-        for i in range(0, len(tasks), self.max_concurrent):
-            batch = tasks[i : i + self.max_concurrent]
-            batch_results = await asyncio.gather(*[task.start() for task in batch], return_exceptions=True)
-            results.extend(batch_results)
+        # 分离有效URL和无效URL
+        valid_tasks = []  # 存储 (task, original_index)
+        invalid_indices = []  # 存储 (original_index, error)
+
+        # 第一遍遍历：分类URL并记录索引
+        for index, url in enumerate(urls):
+            if isinstance(url, ValueError):
+                # 记录无效URL的位置和错误
+                invalid_indices.append((index, url))
+            else:
+                # 为有效URL创建任务
+                task = AsyncTask(index)[method](url, *args, **kwargs)
+                valid_tasks.append((task, index))
+
+        # 预先设置无效URL的结果
+        for index, error in invalid_indices:
+            results[index] = error
+
+        # 分批处理，每批次不超过max_concurrent个请求
+        for i in range(0, len(valid_tasks), self.max_concurrent):
+            batch = valid_tasks[i : i + self.max_concurrent]
+
+            # 并发执行当前批次
+            batch_results = await asyncio.gather(*[self._request_with_semaphore(task.start) for task, _ in batch], return_exceptions=True)
+
+            # 将当前批次的结果放入正确位置
+            for (_, original_index), result in zip(batch, batch_results, strict=False):
+                results[original_index] = result
 
         return results
 
@@ -170,7 +237,7 @@ class AsyncTask:
             raise ValueError(f'未知的HTTP请求方法: {method}')
 
         self.method = method.lower()
-        return self.create
+        return self._create_parse
 
     def __getattr__(self, method: str):
         """通过属性访问方式获取请求方法处理器"""
@@ -180,7 +247,7 @@ class AsyncTask:
         """返回任务的字符串表示形式,方便调试和日志记录"""
         return f'AsyncTask | Method:{self.method} | Id:{self.index} | Url:{self.url}'
 
-    def create(self, url: str, *args, **kwargs) -> AsyncTask:
+    def _create_parse(self, url: str, *args, **kwargs) -> AsyncTask:
         """创建并配置异步请求任务
 
         Args:
@@ -198,37 +265,45 @@ class AsyncTask:
         self.url = url
         self.args = args
         kwargs.setdefault('headers', Head().randua)
-        kwargs.setdefault('timeout', ClientTimeout(TIMEOUT))
+        kwargs.setdefault('timeout', TIMEOUT_AIOH)
         self.cookies = kwargs.pop('cookies', {})
         self.callback = kwargs.pop('callback', None)
         self.kwargs = kwargs
         return self
 
     @spider_retry
-    async def start(self) -> ACResponse:
+    async def start(self) -> UnifiedResp:
         """启动单任务执行
 
-        执行请求并处理响应,支持回调函数处理结果
+        执行请求并处理响应,支持回调函数处理结果。
+        每个请求使用独立的ClientSession，避免会话管理问题。
 
         Returns:
-            ACResponse: 统一的响应对象,包含状态码、头部和内容
+            UnifiedResp: 统一的响应对象,包含状态码、头部和内容
         """
-        async with (
-            ClientSession(cookies=self.cookies, connector=TCPConnector(ssl=False), timeout=ClientTimeout(total=TIMEOUT)) as session,
-            session.request(
+        async with ClientSession(connector=TCPConnector(ssl=False)) as session:
+            # 添加cookies到会话
+            if self.cookies and session:
+                for key, value in self.cookies.items():
+                    session.cookie_jar.update_cookies({key: value}, response_url=URL(self.url))
+
+            # 发起请求
+            response = await session.request(
                 self.method,
                 self.url,
                 *self.args,
                 raise_for_status=True,
                 **self.kwargs,
-            ) as response,
-        ):
+            )
+
+            # 读取内容
             content = await response.read()
-            result = ACResponse(response, content, self.index, self.url)
+            result = UnifiedResp(response, content, self.index, self.url)
+
         return self.callback(result) if callable(self.callback) else result
 
     @spider_retry
-    async def multi_start(self, client: ClientSession) -> ACResponse:
+    async def multi_start(self, client: ClientSession) -> UnifiedResp:
         """在共享会话中执行任务
 
         用于批量请求场景,使用共享的ClientSession减少资源消耗
@@ -237,7 +312,7 @@ class AsyncTask:
             client: 共享的ClientSession对象
 
         Returns:
-            ACResponse: 统一的响应对象
+            UnifiedResp: 统一的响应对象
         """
         async with client.request(
             self.method,
@@ -247,7 +322,7 @@ class AsyncTask:
             **self.kwargs,
         ) as response:
             content = await response.read()
-            result = ACResponse(response, content, self.index, self.url)
+            result = UnifiedResp(response, content, self.index, self.url)
         return self.callback(result) if callable(self.callback) else result
 
 
@@ -255,7 +330,7 @@ class AsyncTask:
 _default_client = AsyncHttpClient(max_concurrent=10)
 
 
-def single_parse(method: str, url: str, *args, **kwargs) -> ACResponse:
+def single_parse(method: str, url: str, *args, **kwargs) -> UnifiedResp:
     """构建并运行单个HTTP请求任务
 
     Args:
@@ -265,18 +340,23 @@ def single_parse(method: str, url: str, *args, **kwargs) -> ACResponse:
         **kwargs: 额外关键字参数
 
     Returns:
-        ACResponse: 响应对象
+        UnifiedResp: 响应对象
 
     Raises:
         ValueError: 当请求方法不在支持列表中时
     """
+    # 边界条件检查
+    if not url or not url.strip():
+        raise ValueError(f'无效的URL: {url}')
+
     if method.lower() not in REQUEST_METHODS:
         raise ValueError(f'未知的HTTP请求方法: {method}')
+
     # 使用全局默认客户端处理请求
     return asyncio.run(_default_client.request(method, url, *args, **kwargs))
 
 
-def multi_parse(method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[ACResponse | BaseException]:
+def multi_parse(method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[UnifiedResp | BaseException | None]:
     """构建并运行多个HTTP请求任务
 
     Args:
@@ -291,20 +371,35 @@ def multi_parse(method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[A
             以避免会话超时问题。
 
     Returns:
-        Sequence[ACResponse | BaseException]: 响应对象或异常的序列
+        Sequence[UnifiedResp | BaseException]: 响应对象或异常的序列
 
     Raises:
         ValueError: 当请求方法不在支持列表中时
     """
+    # 边界条件检查
+    if not urls:
+        return []
+
+    # 验证URL格式并将无效URL标记为ValueError对象
+    # 这是唯一的URL验证点，批处理方法不再重复验证
+    valid_urls = []
+    for url in urls:
+        if not isinstance(url, str) or not url.strip():
+            valid_urls.append(ValueError(f'无效的URL: {url}'))  # 保持长度一致
+        else:
+            valid_urls.append(url)
+
+    # 验证请求方法
     if method.lower() not in REQUEST_METHODS:
         raise ValueError(f'未知的HTTP请求方法: {method}')
 
+    # 选择请求执行方式
     force_sequential = kwargs.pop('force_sequential', False)
 
     if force_sequential:
-        return asyncio.run(_default_client.multi_request(method, urls, *args, **kwargs))
+        return asyncio.run(_default_client.multi_request(method, valid_urls, *args, **kwargs))
 
-    return asyncio.run(_default_client.batch_request(method, urls, *args, **kwargs))
+    return asyncio.run(_default_client.batch_request(method, valid_urls, *args, **kwargs))
 
 
 # 快捷函数 - 提供更简单的API接口
@@ -312,38 +407,4 @@ ahttp_get = partial(single_parse, 'get')
 ahttp_post = partial(single_parse, 'post')
 ahttp_get_all = partial(multi_parse, 'get')
 ahttp_post_all = partial(multi_parse, 'post')
-ahttp_get_all_sequential = partial(multi_parse, 'get', max_concurrency=24, force_sequential=True)
-
-
-if __name__ == '__main__':
-    """示例用法和测试代码"""
-
-    # 测试URL列表
-    urls = ('https://www.163.com', 'https://www.qq.com', 'https://www.126.com', 'https://httpbin.org/post')
-
-    def main():
-        """主测试函数"""
-        # 使用便捷函数发送单个GET请求
-        print('发送单个GET请求...', '\n', ahttp_get(urls[0]))
-
-        # 使用便捷函数发送多个GET请求
-        print('ahttp_get_all 发送多个GET请求...', '\n', ahttp_get_all(urls, force_sequential=False))
-
-        # 发送POST请求
-        print('发送POST请求...', '\n', ahttp_post(urls[3], data=b'test_data'))
-
-    async def demo_async_client():
-        """演示AsyncHttpClient的异步用法"""
-        client = _default_client
-
-        # 单个请求
-        print('client.request:', '\n', await client.request('get', urls[3]))
-
-        # 批量请求(共享会话方式)
-        print('client.multi_request(共享会话):', '\n', await client.multi_request('get', urls[2:4]))
-
-        # 批量请求(分批处理方式)
-        print('client.batch_request(分批处理):', '\n', await client.batch_request('get', urls[2:4]))
-
-    main()
-    asyncio.run(demo_async_client())
+ahttp_get_all_sequential = partial(multi_parse, 'get', force_sequential=True)
