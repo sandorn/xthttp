@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from xtlog import mylog
+
 from xthttp.resp import UnifiedResp
 from xthttp.resp.encoding import decode_content, detect_encoding
-from xtlog import mylog
 
 
 def run_test(url: str, expected_encoding: str | None = None):
@@ -14,7 +15,7 @@ def run_test(url: str, expected_encoding: str | None = None):
 
     try:
         # 导入get函数
-        from xthttp.requ import get
+        from xthttp.http import get
 
         # 获取原始响应
         unified_resp = get(url)

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from .ahttp import AsyncHttpClient, ahttp_get, ahttp_get_all, ahttp_get_all_sequential, ahttp_post, ahttp_post_all
 from .headers import Head, TimeoutConfig
-from .requ import SessionClient, delete, get, head, options, patch, post, put
+from .http import SessionClient, delete, get, head, options, patch, post, put
 from .resp import HttpError, UnifiedResp, create_response, is_success
 
 __version__ = '1.0.0'

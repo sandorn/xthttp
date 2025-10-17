@@ -50,6 +50,7 @@ class DOMParser:
                     print('Warning: HTML内容过大,可能影响解析性能')
 
                 from lxml import html
+
                 self._dom_cache = html.fromstring(self._text_content)
 
             except Exception as e:
@@ -70,11 +71,7 @@ class DOMParser:
             except UnicodeDecodeError:
                 # 如果Unicode解码失败，尝试使用字节
                 try:
-                    self._query_cache = PyQuery(
-                        self._text_content.encode('utf-8', 'ignore'), 
-                        parser='html', 
-                        encoding='utf-8'
-                    )
+                    self._query_cache = PyQuery(self._text_content.encode('utf-8', 'ignore'), parser='html', encoding='utf-8')
                 except Exception:
                     self._query_cache = PyQuery('')
         return self._query_cache
@@ -124,7 +121,7 @@ class DOMParser:
         query = self.get_pyquery()
         if query is None:
             return PyQuery('')
-        
+
         try:
             return query(selector)
         except Exception as e:
@@ -140,36 +137,36 @@ class DOMParser:
         # 方法1: 尝试使用soupparser
         try:
             from lxml.html import soupparser
+
             return soupparser.fromstring(self._text_content)
-        except ImportError:
-            pass
-        except Exception:
-            pass
+        except ImportError as e:
+            print(f'Warning: 导入soupparser失败: {e}')
+        except Exception as e:
+            print(f'Warning: 使用soupparser解析html失败: {e}')
 
         # 方法2: 尝试使用html5lib
         try:
             import html5lib
             from lxml import html
+
             document = html5lib.parse(self._text_content, treebuilder='lxml')
             return document.getroot()
-        except ImportError:
-            pass
-        except Exception:
-            pass
+        except ImportError as e:
+            print(f'Warning: 导入html5lib失败: {e}')
+        except Exception as e:
+            print(f'Warning: 使用html5lib解析html失败: {e}')
 
         # 方法3: 尝试使用更宽松的HTMLParser
         try:
             from lxml import html
+
             parser = html.HTMLParser(
                 encoding='utf-8',
                 recover=True,
                 remove_comments=True,
                 remove_pis=True,
             )
-            return html.fromstring(
-                self._text_content.encode('utf-8'), 
-                parser=parser
-            )
+            return html.fromstring(self._text_content.encode('utf-8'), parser=parser)
         except Exception as e:
             print(f'Warning: 所有HTML解析方法都失败: {e}')
 

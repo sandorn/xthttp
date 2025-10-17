@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import asyncio
 
-from xthttp.ahttp import AsyncHttpClient, ahttp_get, ahttp_get_all, ahttp_post, ahttp_post_all
 from xtlog import mylog
+
+from xthttp.ahttp import AsyncHttpClient, ahttp_get, ahttp_get_all, ahttp_post, ahttp_post_all
 
 # 定义测试URL集合
 test_urls = [

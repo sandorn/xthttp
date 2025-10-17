@@ -45,11 +45,7 @@ RawResponseType = Any  # 原始响应对象类型
 ContentDataType = str | bytes | None  # 响应内容类型
 
 
-def create_response(
-    response: RawResponseType = None, 
-    content: ContentDataType = None, 
-    index: int | None = None
-) -> UnifiedResp:
+def create_response(response: RawResponseType = None, content: ContentDataType = None, index: int | None = None) -> UnifiedResp:
     """创建统一响应对象
 
     Args:

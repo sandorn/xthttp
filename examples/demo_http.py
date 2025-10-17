@@ -13,8 +13,9 @@ Github       : https://github.com/sandorn/xthttp
 
 from __future__ import annotations
 
-from xthttp.requ import SessionClient, delete, get, head, options, patch, post, put
 from xtlog import mylog
+
+from xthttp.http import SessionClient, delete, get, head, options, patch, post, put
 
 # 定义测试URL - 包含正常URL和错误URL
 test_urls = [

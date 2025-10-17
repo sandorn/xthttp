@@ -94,10 +94,10 @@ class UserAgentManager:
         """
         if index is None:
             return random.choice(USER_AGENTS)  # noqa: S311
-        
+
         if not 0 <= index < len(USER_AGENTS):
             raise IndexError(f'User-Agent index {index} out of range [0, {len(USER_AGENTS)})')
-        
+
         return USER_AGENTS[index]
 
     def get_all_ua(self) -> list[str]:

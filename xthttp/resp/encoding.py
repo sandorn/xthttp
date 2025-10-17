@@ -22,10 +22,7 @@ from .adapters import DEFAULT_ENCODING
 CHINESE_ENCODINGS = {'utf-8', 'gbk', 'gb18030', 'big5', 'gb2312'}
 
 # 中文域名集合
-CHINESE_DOMAINS = {
-    'baidu.com', 'sina.com', '163.com', 'qq.com', 'alibaba.com', 
-    'taobao.com', 'jd.com', 'sohu.com', 'zhihu.com', 'weibo.com'
-}
+CHINESE_DOMAINS = {'baidu.com', 'sina.com', '163.com', 'qq.com', 'alibaba.com', 'taobao.com', 'jd.com', 'sohu.com', 'zhihu.com', 'weibo.com'}
 
 
 class EncodingDetector:
@@ -38,9 +35,13 @@ class EncodingDetector:
     def _check_chardet_availability(self) -> bool:
         """检查chardet库是否可用"""
         try:
-            import chardet  # noqa: F401
+            import chardet
+
+            _ = chardet.__version__
+
             return True
-        except ImportError:
+        except ImportError as e:
+            print(f'Warning: 导入chardet失败: {e}')
             return False
 
     def detect_encoding(self, content: bytes, url: str = '') -> str:
@@ -96,7 +97,7 @@ class EncodingDetector:
             if match:
                 encoding = match.group(1).decode('ascii', errors='ignore').lower()
                 encoding = encoding.replace('_', '-')
-                
+
                 # 标准化编码名称
                 if encoding in ['utf8', 'utf8mb4']:
                     return 'utf-8'
@@ -133,9 +134,8 @@ class EncodingDetector:
                     return 'gbk'
                 return encoding
 
-        except Exception:
-            pass
-
+        except Exception as e:
+            print(f'Warning: 使用chardet检测编码失败: {e}')
         return None
 
     def _detect_by_heuristics(self, content: bytes, url: str) -> str:
@@ -150,7 +150,7 @@ class EncodingDetector:
         """
         # 检查是否为中文网站
         is_chinese_domain = self._is_chinese_domain(url)
-        
+
         # 检查内容是否包含中文特征
         has_chinese = self._has_chinese_content(content)
 
@@ -179,7 +179,7 @@ class EncodingDetector:
         """
         if not url:
             return False
-        
+
         url_lower = url.lower()
         return any(domain in url_lower for domain in CHINESE_DOMAINS)
 
@@ -216,10 +216,7 @@ class EncodingDetector:
             return True
 
         # 3. GBK 编码检测
-        if re.search(rb'[\xb0-\xf7][\xa1-\xfe]', sample):
-            return True
-
-        return False
+        return bool(re.search(rb'[\xb0-\xf7][\xa1-\xfe]', sample))
 
     def _can_decode(self, content: bytes, encoding: str) -> bool:
         """检查内容是否可以用指定编码解码
@@ -258,7 +255,7 @@ class EncodingDetector:
 
         # 回退解码策略
         fallback_encodings = ['utf-8', 'gbk', 'latin-1']
-        
+
         for fallback_encoding in fallback_encodings:
             if fallback_encoding != encoding:
                 try:
@@ -269,7 +266,7 @@ class EncodingDetector:
         # 最后使用宽松方式
         with suppress(Exception):
             return content.decode('utf-8', errors='replace')
-        
+
         return content.decode('latin-1', errors='replace')
 
 
