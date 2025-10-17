@@ -109,25 +109,6 @@ class DOMParser:
 
         return results
 
-    def css_select(self, selector: str) -> PyQuery:
-        """CSS选择器查询
-
-        Args:
-            selector: CSS选择器
-
-        Returns:
-            PyQuery: 查询结果
-        """
-        query = self.get_pyquery()
-        if query is None:
-            return PyQuery('')
-
-        try:
-            return query(selector)
-        except Exception as e:
-            print(f'Warning: CSS选择器查询失败: {selector}, 错误: {e}')
-            return PyQuery('')
-
     def _parse_with_fallback(self) -> Any | None:
         """使用后备解析器解析HTML
 

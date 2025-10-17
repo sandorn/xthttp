@@ -21,10 +21,41 @@ from .user_agent import UserAgentManager, get_ua_manager
 
 
 class Head:
-    """HTTP Headers管理类，提供User-Agent随机化和headers更新功能"""
+    """HTTP Headers管理类，提供User-Agent随机化和headers更新功能
+
+    该类提供HTTP请求头的管理功能，包括随机User-Agent生成、请求头更新、
+    以及安全的请求头操作。支持多种User-Agent来源和自定义请求头。
+
+    Attributes:
+        headers (dict[str, str]): 当前请求头字典
+        _default_config (DefaultConfig): 默认配置实例
+        _ua_manager (UserAgentManager): User-Agent管理器实例
+
+    Example:
+        >>> from xthttp.headers import Head
+        >>> head = Head()
+        >>> # 获取随机User-Agent
+        >>> headers = head.randua
+        >>> print(headers['User-Agent'])
+        >>> # 更新请求头
+        >>> head.update_headers({'Authorization': 'Bearer token'})
+        >>> # 获取当前请求头
+        >>> current_headers = head.get_current_headers()
+        >>> print(current_headers)
+
+    Note:
+        该类提供线程安全的请求头管理，支持多种User-Agent来源。
+    """
 
     def __init__(self) -> None:
-        """初始化Headers管理器"""
+        """初始化Headers管理器
+
+        创建新的Headers管理器实例，初始化默认配置和User-Agent管理器。
+        自动设置默认的HTTP请求头。
+
+        Note:
+            初始化时会自动加载默认配置和User-Agent管理器。
+        """
         self._default_config = get_default_config()
         self._ua_manager = get_ua_manager()
         self.headers: dict[str, str] = self._default_config.copy_headers()
@@ -47,8 +78,21 @@ class Head:
     def randua(self) -> dict[str, str]:
         """获取随机User-Agent（使用fake_useragent库）
 
+        生成并返回包含随机User-Agent的请求头字典，每次调用都会生成新的User-Agent。
+
         Returns:
             dict[str, str]: 包含随机User-Agent的headers字典
+
+        Example:
+            >>> head = Head()
+            >>> headers = head.randua
+            >>> print(headers['User-Agent'])  # 随机生成的User-Agent
+            >>> # 再次调用会生成新的User-Agent
+            >>> headers2 = head.randua
+            >>> print(headers2['User-Agent'])  # 不同的User-Agent
+
+        Note:
+            每次调用都会生成新的随机User-Agent，适合需要频繁更换User-Agent的场景。
         """
         self.headers['User-Agent'] = self._ua_manager.get_random_ua()
         return self.headers

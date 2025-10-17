@@ -113,18 +113,41 @@ class SessionClient:
     提供会话级别的HTTP请求管理，支持Cookie保存和请求头持久化，
     适用于需要维持会话状态的场景。
 
+    Attributes:
+        session (requests.Session): 底层的requests会话对象
+        timeout (tuple): 请求超时配置 (连接超时, 读取超时)
+        method (str): 当前请求方法
+        args (tuple): 当前请求的位置参数
+        kwargs (dict[str, Any]): 当前请求的关键字参数
+        url (str): 当前请求URL
+        _head_instance (Head): 请求头管理实例
+
     Example:
+        >>> # 基本使用
+        >>> with SessionClient() as client:
+        >>>     response = client.get('https://httpbin.org/get')
+        >>>     print(response.status)
+        >>> # 会话状态管理
         >>> with SessionClient() as client:
         >>> # 登录获取Cookie
-        >>>     client.post('https://example.com/login', data={'username': 'user', 'password': 'pass'})
+        >>>     login_resp = client.post('https://example.com/login',
+        >>>                            data={'username': 'user', 'password': 'pass'})
         >>> # 使用同一会话访问需要登录的页面
-        >>>     response = client.get('https://example.com/user/profile')
+        >>>     profile_resp = client.get('https://example.com/user/profile')
+        >>>     print(f'登录状态: {login_resp.status}, 个人资料: {profile_resp.status}')
     """
 
     __slots__ = ('_head_instance', 'args', 'kwargs', 'method', 'session', 'timeout', 'url')
 
     def __init__(self) -> None:
-        """初始化会话客户端"""
+        """初始化会话客户端
+
+        创建新的会话实例，初始化所有必要的属性和配置。
+        会话将自动配置默认超时时间和请求头管理。
+
+        Note:
+            会话对象会自动管理Cookie和连接池，支持HTTP/1.1的持久连接。
+        """
         self.session = requests.session()
         self.timeout: tuple = TimeoutConfig.get_requests_timeout()
         self.method: str = ''
@@ -136,29 +159,51 @@ class SessionClient:
     def __enter__(self) -> SessionClient:
         """支持上下文管理器协议，用于自动关闭会话
 
+        使SessionClient支持with语句，确保会话资源得到正确释放。
+
         Returns:
-            SessionClient: 当前会话实例
+            SessionClient: 当前会话实例，支持链式调用
+
+        Example:
+            >>> with SessionClient() as client:
+            >>>     response = client.get('https://httpbin.org/get')
+            >>> # 会话会自动关闭
         """
         return self
 
     def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any) -> None:
         """退出上下文时关闭会话
 
+        自动清理会话资源，包括关闭底层连接池和清理Cookie。
+
         Args:
-            exc_type: 异常类型
-            exc_val: 异常值
-            exc_tb: 异常回溯
+            exc_type (type[BaseException] | None): 异常类型，如果有异常发生
+            exc_val (BaseException | None): 异常值，如果有异常发生
+            exc_tb (Any): 异常回溯信息，如果有异常发生
+
+        Note:
+            无论是否发生异常，都会正确关闭会话资源。
         """
         self.session.close()
 
     def __getitem__(self, method: str):
         """支持通过索引方式设置请求方法
 
+        允许使用字典风格的语法来设置HTTP请求方法，支持链式调用。
+
         Args:
-            method: HTTP请求方法
+            method (str): HTTP请求方法，如 'get', 'post', 'put' 等
 
         Returns:
-            指向create_task方法的引用，用于链式调用
+            Callable: 指向create_task方法的引用，用于链式调用
+
+        Example:
+            >>> client = SessionClient()
+            >>> response = client['get']('https://httpbin.org/get')
+            >>> # 等价于 client.get('https://httpbin.org/get')
+
+        Note:
+            方法名会自动转换为小写，支持大小写不敏感的调用。
         """
         self.method = method.lower()  # 保存请求方法
         return self.create_task  # 返回创建任务的方法
@@ -166,30 +211,62 @@ class SessionClient:
     def __getattr__(self, method: str):
         """支持通过属性访问设置请求方法
 
+        允许使用属性风格的语法来设置HTTP请求方法，支持链式调用。
+        这是Python的动态属性访问机制，当访问不存在的属性时会调用此方法。
+
         Args:
-            method: HTTP请求方法名称
+            method (str): HTTP请求方法名称，如 'get', 'post', 'put' 等
 
         Returns:
-            指向create_task方法的引用，用于链式调用
+            Callable: 指向create_task方法的引用，用于链式调用
+
+        Example:
+            >>> client = SessionClient()
+            >>> response = client.get('https://httpbin.org/get')
+            >>> response = client.post('https://httpbin.org/post', data={'key': 'value'})
+
+        Note:
+            方法名会自动转换为小写，支持大小写不敏感的调用。
+            内部调用__getitem__方法实现相同功能。
         """
         return self.__getitem__(method)
 
     def create_task(self, *args: Any, **kwargs: Any) -> UnifiedResp:
         """创建并执行请求任务
 
+        这是会话客户端的核心方法，负责创建和执行HTTP请求任务。
+        支持自动重试机制和统一的响应处理。
+
         Args:
-            *args: 位置参数，第一个参数为URL
-            **kwargs: 关键字参数
-                headers: 请求头，默认为随机User-Agent
-                cookies: Cookie字典，默认为空字典
-                timeout: 请求超时时间，默认使用timeout常量
-                callback: 回调函数（会被忽略）
+            *args (Any): 位置参数，第一个参数必须为URL字符串
+            **kwargs (Any): 关键字参数，支持以下选项：
+                headers (dict[str, str]): 请求头字典，默认为随机User-Agent
+                cookies (dict[str, str]): Cookie字典，默认为空字典
+                timeout (float | tuple): 请求超时时间，默认使用timeout常量
+                callback (Callable): 回调函数（会被忽略，用于兼容性）
+                data (dict | str | bytes): POST请求体数据
+                json (dict): JSON格式的请求体数据
+                params (dict): URL查询参数
+                files (dict): 文件上传数据
 
         Returns:
-            UnifiedResp: 包装后的响应对象
+            UnifiedResp: 包装后的统一响应对象，包含状态码、内容、头部等信息
 
         Raises:
-            ValueError: 当请求方法不在支持列表中时
+            ValueError: 当URL参数为空或请求方法不在支持列表中时
+            requests.RequestException: 当网络请求失败时
+            requests.HTTPError: 当HTTP状态码表示错误时
+
+        Example:
+            >>> client = SessionClient()
+            >>> # GET请求
+            >>> response = client.create_task('https://httpbin.org/get')
+            >>> # POST请求
+            >>> response = client.create_task('https://httpbin.org/post',
+            >>>                              data={'key': 'value'})
+            >>> # 带自定义头部
+            >>> response = client.create_task('https://httpbin.org/get',
+            >>>                              headers={'Authorization': 'Bearer token'})
         """
         if not args:
             raise ValueError('URL参数不能为空')
@@ -220,11 +297,21 @@ class SessionClient:
     def start(self) -> UnifiedResp:
         """执行请求并处理响应
 
+        实际执行HTTP请求的核心方法，使用spider_retry装饰器提供自动重试功能。
+        请求执行完成后会自动更新会话的Cookie状态。
+
         Returns:
-            UnifiedResp: 包装后的响应对象
+            UnifiedResp: 包装后的统一响应对象，包含完整的响应信息
 
         Raises:
-            requests.RequestException: 当请求失败时
+            requests.RequestException: 当网络请求失败时
+            requests.HTTPError: 当HTTP状态码表示错误时
+            requests.Timeout: 当请求超时时
+            requests.ConnectionError: 当连接失败时
+
+        Note:
+            此方法会自动更新会话的Cookie状态，确保后续请求能够保持会话状态。
+            使用spider_retry装饰器，在请求失败时会自动重试。
         """
         response = self.session.request(self.method, self.url, *self.args, **self.kwargs)
         response.raise_for_status()
@@ -234,11 +321,21 @@ class SessionClient:
     def update_cookies(self, cookie_dict: dict[str, str]) -> None:
         """更新会话的Cookie
 
+        向当前会话添加或更新Cookie信息，这些Cookie会在后续请求中自动发送。
+
         Args:
-            cookie_dict: 包含Cookie键值对的字典
+            cookie_dict (dict[str, str]): 包含Cookie键值对的字典，键为Cookie名称，值为Cookie值
 
         Raises:
             TypeError: 当cookie_dict不是字典类型时
+
+        Example:
+            >>> client = SessionClient()
+            >>> client.update_cookies({'session_id': 'abc123', 'user_id': '456'})
+            >>> # 后续请求会自动包含这些Cookie
+
+        Note:
+            Cookie更新是累积的，新Cookie会与现有Cookie合并，同名Cookie会被覆盖。
         """
         if not isinstance(cookie_dict, dict):
             raise TypeError('cookie_dict必须是字典类型')
@@ -247,11 +344,21 @@ class SessionClient:
     def update_headers(self, header_dict: dict[str, str]) -> None:
         """更新会话的请求头
 
+        向当前会话添加或更新HTTP请求头，这些头部会在后续请求中自动发送。
+
         Args:
-            header_dict: 包含请求头键值对的字典
+            header_dict (dict[str, str]): 包含请求头键值对的字典，键为头部名称，值为头部值
 
         Raises:
             TypeError: 当header_dict不是字典类型时
+
+        Example:
+            >>> client = SessionClient()
+            >>> client.update_headers({'Authorization': 'Bearer token', 'X-Custom': 'value'})
+            >>> # 后续请求会自动包含这些头部
+
+        Note:
+            请求头更新是累积的，新头部会与现有头部合并，同名头部会被覆盖。
         """
         if not isinstance(header_dict, dict):
             raise TypeError('header_dict必须是字典类型')
@@ -260,17 +367,41 @@ class SessionClient:
     def get_current_headers(self) -> dict[str, str | bytes]:
         """获取当前会话的请求头
 
+        返回当前会话中所有请求头的副本，包括默认头部和用户自定义头部。
+
         Returns:
-            dict[str, str | bytes]: 当前请求头的副本
+            dict[str, str | bytes]: 当前请求头的副本，键为头部名称，值为头部值
+
+        Example:
+            >>> client = SessionClient()
+            >>> client.update_headers({'Authorization': 'Bearer token'})
+            >>> headers = client.get_current_headers()
+            >>> print(headers.get('Authorization'))  # 'Bearer token'
+
+        Note:
+            返回的是请求头的副本，修改返回的字典不会影响会话的请求头。
         """
+        # 使用 dict() 构造函数处理 MutableMapping 类型
         return dict(self.session.headers)
 
     def get_current_cookies(self) -> dict[str, str]:
         """获取当前会话的Cookie
 
+        返回当前会话中所有Cookie的副本，包括从服务器接收到的Cookie和用户设置的Cookie。
+
         Returns:
-            dict[str, str]: 当前Cookie的副本
+            dict[str, str]: 当前Cookie的副本，键为Cookie名称，值为Cookie值
+
+        Example:
+            >>> client = SessionClient()
+            >>> client.update_cookies({'session_id': 'abc123'})
+            >>> cookies = client.get_current_cookies()
+            >>> print(cookies.get('session_id'))  # 'abc123'
+
+        Note:
+            返回的是Cookie的副本，修改返回的字典不会影响会话的Cookie。
         """
+        # 使用 dict() 构造函数处理 RequestsCookieJar 类型
         return dict(self.session.cookies)
 
 

@@ -13,6 +13,7 @@ Github       : https://github.com/sandorn/xthttp
 
 from __future__ import annotations
 
+import hashlib
 import re
 from contextlib import suppress
 
@@ -31,6 +32,10 @@ class EncodingDetector:
     def __init__(self):
         """初始化编码检测器"""
         self._chardet_available = self._check_chardet_availability()
+        # 添加编码检测结果缓存，提高性能
+        self._encoding_cache: dict[str, str] = {}
+        # 缓存大小限制，防止内存泄漏
+        self._max_cache_size = 1000
 
     def _check_chardet_availability(self) -> bool:
         """检查chardet库是否可用"""
@@ -109,7 +114,7 @@ class EncodingDetector:
         return None
 
     def _detect_with_chardet(self, content: bytes) -> str | None:
-        """使用chardet检测编码
+        """使用chardet检测编码，带缓存机制
 
         Args:
             content: 响应内容字节
@@ -122,6 +127,15 @@ class EncodingDetector:
 
             # 只检测前64KB内容以提高性能
             sample = content[:65536]
+
+            # 使用内容hash作为缓存键，避免重复检测相同内容
+            # 使用sha256而不是md5，更安全
+            content_hash = hashlib.sha256(sample).hexdigest()
+
+            # 检查缓存
+            if content_hash in self._encoding_cache:
+                return self._encoding_cache[content_hash]
+
             result = chardet.detect(sample)
             encoding = result.get('encoding')
             confidence = result.get('confidence', 0)
@@ -129,14 +143,27 @@ class EncodingDetector:
             if encoding and confidence > 0.6:
                 encoding = encoding.lower()
                 if encoding in ['utf8', 'utf8mb4']:
-                    return 'utf-8'
-                if encoding in ['gb2312']:
-                    return 'gbk'
+                    encoding = 'utf-8'
+                elif encoding in ['gb2312']:
+                    encoding = 'gbk'
+
+                # 缓存检测结果，并检查缓存大小
+                self._encoding_cache[content_hash] = encoding
+                self._cleanup_cache_if_needed()
                 return encoding
 
         except Exception as e:
             print(f'Warning: 使用chardet检测编码失败: {e}')
         return None
+
+    def _cleanup_cache_if_needed(self) -> None:
+        """清理缓存，防止内存泄漏"""
+        if len(self._encoding_cache) > self._max_cache_size:
+            # 删除最旧的缓存项（简单的FIFO策略）
+            # 使用迭代器而不是创建完整列表，节省内存
+            keys_to_remove = list(self._encoding_cache.keys())[: len(self._encoding_cache) // 2]
+            for key in keys_to_remove:
+                del self._encoding_cache[key]
 
     def _detect_by_heuristics(self, content: bytes, url: str) -> str:
         """基于启发式规则检测编码

@@ -1,13 +1,13 @@
 [project]
 name = "xthttp"
-version = "0.0.1"
+version = "0.1.0"
 authors = [
     { name="sandorn", email="sandorn@live.cn" },
 ]
-description = ""
+description = "A high-performance Python HTTP client library with sync/async support, intelligent encoding detection, and DOM parsing capabilities"
 readme = "README.md"
 license = { file="LICENSE" }
-keywords = []
+keywords = ["http", "client", "async", "requests", "aiohttp", "scraping", "encoding", "dom"]
 requires-python = ">=3.13"
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -15,12 +15,21 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Text Processing :: Markup :: HTML",
     "Topic :: Utilities",
+    "Operating System :: OS Independent",
 ]
 
 dependencies = [
-    "six>=1.16.0",
-    "websocket-client>=1.5.1",
+    "requests>=2.31.0",
+    "aiohttp>=3.8.0",
+    "lxml>=4.9.0",
+    "pyquery>=2.0.0",
+    "chardet>=5.0.0",
+    "fake-useragent>=1.4.0",
+    "nswrapslite>=0.1.0",
     "xtlog>=0.1.7",
 ]
 

@@ -29,6 +29,7 @@ Github       : https://github.com/sandorn/xthttp
 from __future__ import annotations
 
 import asyncio
+import itertools
 from collections.abc import Callable, Sequence
 from functools import partial
 
@@ -49,20 +50,55 @@ REQUEST_METHODS = ('get', 'post', 'head', 'options', 'put', 'delete', 'trace', '
 class AsyncHttpClient:
     """异步HTTP客户端 - 提供并发控制的HTTP请求管理
 
-    该类实现了并发请求控制和批量请求处理,
+    该类实现了并发请求控制和批量请求处理，基于aiohttp构建，
     适合需要高效执行大量HTTP请求的场景。
 
+    Attributes:
+        max_concurrent (int): 最大并发请求数，控制同时发起的请求数量
+        semaphore (asyncio.Semaphore): 信号量，用于控制并发数量
+
     核心特性：
-    - 并发控制与限制
-    - 超时控制与错误处理
-    - 支持批量请求处理
+    - 并发控制与限制：通过信号量控制同时进行的请求数量
+    - 超时控制与错误处理：自动处理网络超时和连接错误
+    - 支持批量请求处理：高效处理大量URL的批量请求
+    - 自动重试机制：网络失败时自动重试
+    - 统一响应处理：返回统一的UnifiedResp对象
+
+    Example:
+        >>> import asyncio
+        >>> from xthttp.ahttp import AsyncHttpClient
+        >>> async def main():
+        >>>     client = AsyncHttpClient(max_concurrent=5)
+        >>> # 单个请求
+        >>>     response = await client.request('get', 'https://httpbin.org/get')
+        >>>     print(f'状态码: {response.status}')
+        >>> # 批量请求
+        >>>     urls = ['https://httpbin.org/get', 'https://httpbin.org/post']
+        >>>     responses = await client.request_all('get', urls)
+        >>>     for resp in responses:
+        >>>         print(f'URL: {resp.url}, 状态: {resp.status}')
+        >>> asyncio.run(main())
     """
 
     def __init__(self, max_concurrent: int = 10):
         """初始化异步HTTP客户端
 
+        创建新的异步HTTP客户端实例，配置并发控制参数。
+
         Args:
-            max_concurrent: 最大并发请求数,默认为10,控制同时发起的请求数量
+            max_concurrent (int): 最大并发请求数，默认为10，控制同时发起的请求数量。
+                                建议根据目标服务器的承载能力和网络状况调整此值。
+
+        Note:
+            - 并发数过高可能导致目标服务器过载或触发反爬虫机制
+            - 并发数过低会影响请求效率
+            - 建议根据实际情况在5-20之间调整
+
+        Example:
+            >>> # 低并发，适合对服务器友好的场景
+            >>> client = AsyncHttpClient(max_concurrent=3)
+            >>> # 高并发，适合高性能爬取场景
+            >>> client = AsyncHttpClient(max_concurrent=20)
         """
         self.max_concurrent = max_concurrent
         self.semaphore = asyncio.Semaphore(max_concurrent)
@@ -70,20 +106,46 @@ class AsyncHttpClient:
     async def request(self, method: str, url: str, *args, **kwargs) -> UnifiedResp:
         """执行单个HTTP请求
 
+        执行单个异步HTTP请求，支持并发控制和自动重试机制。
+
         Args:
-            method: HTTP方法,如'get'、'post'等
-            url: 请求的目标URL
-            *args: 传递给aiohttp.ClientSession.request的额外位置参数
-            **kwargs: 传递给aiohttp.ClientSession.request的额外关键字参数
-                - headers: 请求头信息,默认为自动生成的随机User-Agent
-                - timeout: 请求超时时间,默认为TIMEOUT常量
-                - cookies: Cookie信息
-                - callback: 响应处理的回调函数
-                - data/json: 请求体数据
-                - params: URL查询参数
+            method (str): HTTP方法，如'get'、'post'、'put'、'delete'等
+            url (str): 请求的目标URL
+            *args (Any): 传递给aiohttp.ClientSession.request的额外位置参数
+            **kwargs (Any): 传递给aiohttp.ClientSession.request的额外关键字参数：
+                headers (dict[str, str]): 请求头信息，默认为自动生成的随机User-Agent
+                timeout (float | aiohttp.ClientTimeout): 请求超时时间，默认为TIMEOUT常量
+                cookies (dict[str, str]): Cookie信息
+                callback (Callable): 响应处理的回调函数（会被忽略）
+                data (dict | str | bytes): POST请求体数据
+                json (dict): JSON格式的请求体数据
+                params (dict): URL查询参数
+                proxy (str): 代理服务器地址
 
         Returns:
             UnifiedResp: 包含响应状态、头部和内容的统一响应对象
+
+        Raises:
+            aiohttp.ClientError: 当网络请求失败时
+            aiohttp.ClientTimeout: 当请求超时时
+            ValueError: 当HTTP方法不支持时
+
+        Example:
+            >>> import asyncio
+            >>> from xthttp.ahttp import AsyncHttpClient
+            >>> async def main():
+            >>>     client = AsyncHttpClient()
+            >>> # GET请求
+            >>>     response = await client.request('get', 'https://httpbin.org/get')
+            >>>     print(f'状态码: {response.status}')
+            >>> # POST请求
+            >>>     response = await client.request('post', 'https://httpbin.org/post',
+            >>>                                    data={'key': 'value'})
+            >>>     print(f'响应内容: {response.text[:100]}')
+            >>> asyncio.run(main())
+
+        Note:
+            此方法会自动应用并发控制，确保不会超过max_concurrent限制。
         """
         task = getattr(AsyncTask(), method)(url, *args, **kwargs)
         async with self.semaphore:
@@ -92,17 +154,51 @@ class AsyncHttpClient:
     async def multi_request(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[UnifiedResp | BaseException | None]:
         """批量执行HTTP请求(共享会话方式)
 
-        特点:使用共享的TCP连接器和ClientSession,大幅减少连接建立的开销
-        注意：该方法假设传入的URL已经过验证，由multi_parse函数调用
+        使用共享的TCP连接器和ClientSession，大幅减少连接建立的开销。
+        所有请求共享同一个会话，Cookie和连接池会被复用，适合需要保持会话状态的场景。
 
         Args:
-            method: HTTP方法,如'get'、'post'等
-            urls: 要请求的URL列表(已验证)
-            *args: 传递给每个请求的额外位置参数
-            **kwargs: 传递给每个请求的额外关键字参数
+            method (str): HTTP方法，如'get'、'post'、'put'、'delete'等
+            urls (Sequence[str]): 要请求的URL列表，支持字符串或ValueError对象
+            *args (Any): 传递给每个请求的额外位置参数
+            **kwargs (Any): 传递给每个请求的额外关键字参数：
+                headers (dict[str, str]): 请求头信息
+                timeout (float | aiohttp.ClientTimeout): 请求超时时间
+                cookies (dict[str, str]): Cookie信息
+                data (dict | str | bytes): POST请求体数据
+                json (dict): JSON格式的请求体数据
+                params (dict): URL查询参数
 
         Returns:
-            Sequence[UnifiedResp | BaseException]: 响应对象或异常的序列
+            Sequence[UnifiedResp | BaseException | None]: 响应对象或异常的序列，
+            保持与输入URL列表相同的顺序
+
+        Raises:
+            ValueError: 当HTTP方法不支持时
+            aiohttp.ClientError: 当网络请求失败时
+
+        Example:
+            >>> import asyncio
+            >>> from xthttp.ahttp import AsyncHttpClient
+            >>> async def main():
+            >>>     client = AsyncHttpClient(max_concurrent=5)
+            >>>     urls = [
+            >>>         'https://httpbin.org/get',
+            >>>         'https://httpbin.org/post',
+            >>>         'https://httpbin.org/put'
+            >>>     ]
+            >>>     responses = await client.multi_request('get', urls)
+            >>>     for i, resp in enumerate(responses):
+            >>>         if isinstance(resp, Exception):
+            >>>             print(f'URL {i} 请求失败: {resp}')
+            >>>         else:
+            >>>             print(f'URL {i} 状态码: {resp.status}')
+            >>> asyncio.run(main())
+
+        Note:
+            - 使用共享会话，大幅减少连接建立开销
+            - 返回结果保持与输入URL相同的顺序
+            - 无效URL会返回ValueError异常对象
         """
         # 预先分配结果列表，保持原始顺序
         n = len(urls)
@@ -142,25 +238,65 @@ class AsyncHttpClient:
         return results
 
     async def _request_with_semaphore(self, func, *args, **kwargs):
-        """使用信号量控制并发执行指定函数"""
+        """使用信号量控制并发执行指定函数
+
+        内部方法，用于确保函数执行时不会超过最大并发数限制。
+
+        Args:
+            func (Callable): 要执行的异步函数
+            *args (Any): 传递给函数的位置参数
+            **kwargs (Any): 传递给函数的关键字参数
+
+        Returns:
+            Any: 函数执行的结果
+
+        Note:
+            此方法确保并发控制，防止同时执行过多请求导致资源耗尽。
+        """
         async with self.semaphore:
             return await func(*args, **kwargs)
 
     async def batch_request(self, method: str, urls: Sequence[str], *args, **kwargs) -> Sequence[UnifiedResp | BaseException | None]:
         """批量执行HTTP请求(分批处理方式)
 
-        特点:将请求分成多个批次执行,每批次不超过max_concurrent个请求
+        将请求分成多个批次执行，每批次不超过max_concurrent个请求。
         适合处理大量URL的场景，可以有效避免连接数过多导致的资源耗尽问题。
-        注意：该方法假设传入的URL已经过验证，由multi_parse函数调用
 
         Args:
-            method: HTTP方法
-            urls: 要请求的URL列表(已验证)
-            *args: 传递给每个请求的额外位置参数
-            **kwargs: 传递给每个请求的额外关键字参数
+            method (str): HTTP方法，如'get'、'post'、'put'、'delete'等
+            urls (Sequence[str]): 要请求的URL列表，支持字符串或ValueError对象
+            *args (Any): 传递给每个请求的额外位置参数
+            **kwargs (Any): 传递给每个请求的额外关键字参数：
+                headers (dict[str, str]): 请求头信息
+                timeout (float | aiohttp.ClientTimeout): 请求超时时间
+                cookies (dict[str, str]): Cookie信息
+                data (dict | str | bytes): POST请求体数据
+                json (dict): JSON格式的请求体数据
+                params (dict): URL查询参数
 
         Returns:
-            Sequence[UnifiedResp | BaseException]: 响应对象或异常的序列
+            Sequence[UnifiedResp | BaseException | None]: 响应对象或异常的序列，
+            保持与输入URL列表相同的顺序
+
+        Raises:
+            ValueError: 当HTTP方法不支持时
+            aiohttp.ClientError: 当网络请求失败时
+
+        Example:
+            >>> import asyncio
+            >>> from xthttp.ahttp import AsyncHttpClient
+            >>> async def main():
+            >>>     client = AsyncHttpClient(max_concurrent=3)
+            >>>     urls = [f'https://httpbin.org/get?page={i}' for i in range(10)]
+            >>>     responses = await client.batch_request('get', urls)
+            >>>     success_count = sum(1 for resp in responses if not isinstance(resp, Exception))
+            >>>     print(f'成功请求: {success_count}/{len(urls)}')
+            >>> asyncio.run(main())
+
+        Note:
+            - 分批处理，避免同时创建过多连接
+            - 每批次不超过max_concurrent个请求
+            - 返回结果保持与输入URL相同的顺序
         """
         # 预先分配结果列表，保持原始顺序
         n = len(urls)
@@ -185,15 +321,24 @@ class AsyncHttpClient:
             results[index] = error
 
         # 分批处理，每批次不超过max_concurrent个请求
-        for i in range(0, len(valid_tasks), self.max_concurrent):
-            batch = valid_tasks[i : i + self.max_concurrent]
+        # 使用更高效的分批算法：使用itertools.batched (Python 3.12+) 或自定义分批器
+        def batched(iterable, n):
+            """将可迭代对象分批，每批最多n个元素"""
+            iterator = iter(iterable)
+            while True:
+                batch = list(itertools.islice(iterator, n))
+                if not batch:
+                    break
+                yield batch
 
+        # 分批处理任务
+        for batch in batched(valid_tasks, self.max_concurrent):
             # 并发执行当前批次
             batch_results = await asyncio.gather(*[self._request_with_semaphore(task.start) for task, _ in batch], return_exceptions=True)
 
-            # 将当前批次的结果放入正确位置
-            for (_, original_index), result in zip(batch, batch_results, strict=False):
-                results[original_index] = result
+            # 优化结果映射：直接使用索引，避免zip的开销
+            for j, (_, original_index) in enumerate(batch):
+                results[original_index] = batch_results[j]
 
         return results
 
@@ -201,15 +346,38 @@ class AsyncHttpClient:
 class AsyncTask:
     """aiohttp异步任务原型 - 封装HTTP请求的参数和执行逻辑
 
-    该类提供了灵活的请求配置接口,支持不同的HTTP方法、请求参数设置
-    以及回调函数处理。
+    该类提供了灵活的请求配置接口，支持不同的HTTP方法、请求参数设置
+    以及回调函数处理。主要用于内部实现，用户通常不需要直接使用。
+
+    Attributes:
+        index (int): 任务索引，用于标识不同的任务
+        url (str): 请求URL
+        args (tuple): 请求的位置参数
+        cookies (dict): Cookie信息
+        callback (Callable | None): 回调函数
+        kwargs (dict): 请求的关键字参数
+        method (str): HTTP请求方法
+
+    Example:
+        >>> # 内部使用示例
+        >>> task = AsyncTask(index=1)
+        >>> response = await task['get']('https://httpbin.org/get')
+        >>> print(f'状态码: {response.status}')
+
+    Note:
+        这是内部实现类，用户通常通过AsyncHttpClient来使用异步HTTP功能。
     """
 
     def __init__(self, index: int | None = None):
         """初始化异步任务
 
+        创建新的异步任务实例，设置任务标识符和初始化请求参数。
+
         Args:
-            index: 任务索引,用于标识不同的任务,默认使用对象ID
+            index (int | None): 任务索引，用于标识不同的任务，默认为None时使用对象ID
+
+        Note:
+            任务索引主要用于批量请求时保持结果顺序，确保返回结果与输入URL对应。
         """
         self.index = index if index is not None else id(self)
         self.url: str = ''

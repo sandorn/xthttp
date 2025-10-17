@@ -77,6 +77,20 @@ def run_test(url: str, expected_encoding: str | None = None):
         xpath_result = unified_resp.xpath('//title/text()')
         mylog.info(f'xpath(//title/text()) : {xpath_result}')
 
+        # 测试CSS选择器功能
+        try:
+            css_title = unified_resp.css_select('title')
+            mylog.info(f'CSS选择器测试 - title标签: {css_title.text() if css_title else "未找到"}')
+
+            css_links = unified_resp.css_select('a')
+            mylog.info(f'CSS选择器测试 - 链接数量: {len(css_links)}')
+
+            if css_links:
+                first_link = css_links.eq(0)
+                mylog.info(f'CSS选择器测试 - 第一个链接: {first_link.attr("href") or "无href属性"}')
+        except Exception as e:
+            mylog.warning(f'CSS选择器测试失败: {e}')
+
         xpath_multi = unified_resp.xpath('//title/text()', '//title/text()')
         mylog.info(f'xpath([//title/text(), //title/text()]) : {xpath_multi}')
 

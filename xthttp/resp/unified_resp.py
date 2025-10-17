@@ -36,7 +36,33 @@ class HttpError(Exception):
 
 
 class UnifiedResp:
-    """统一响应类,提供同步和异步HTTP响应的统一接口"""
+    """统一响应类，提供同步和异步HTTP响应的统一接口
+
+    该类封装了不同HTTP库（如requests、aiohttp）的响应对象，提供统一的访问接口。
+    支持自动编码检测、DOM解析、XPath查询、CSS选择器等功能。
+
+    Attributes:
+        _raw (RawResponseType): 原始HTTP响应对象
+        _index (int): 响应对象的唯一标识符
+        _url (str | None): 请求URL
+        _adapter (BaseRespAdapter | None): 响应适配器
+        _dom_parser (DOMParser): DOM解析器实例
+
+    Example:
+        >>> from xthttp import get
+        >>> response = get('https://httpbin.org/get')
+        >>> print(f'状态码: {response.status}')
+        >>> print(f'响应内容: {response.text[:100]}')
+        >>> # DOM操作
+        >>> title = response.css_select('title').text()
+        >>> links = response.xpath('//a/@href')
+        >>> # JSON解析
+        >>> data = response.json
+        >>> print(f'JSON数据: {data}')
+
+    Note:
+        该类自动处理编码检测和内容解析，支持多种HTTP库的响应对象。
+    """
 
     def __init__(
         self,
@@ -48,12 +74,17 @@ class UnifiedResp:
     ):
         """初始化统一响应对象
 
+        创建新的统一响应对象，封装原始HTTP响应并提供统一访问接口。
+
         Args:
-            response: 原始HTTP响应对象
-            content: 响应内容
-            index: 响应对象的唯一标识符
-            url: 请求URL
-            adapter: 响应适配器
+            response (RawResponseType, optional): 原始HTTP响应对象，如requests.Response或aiohttp.ClientResponse
+            content (ContentDataType, optional): 响应内容，字符串或字节流
+            index (int | None, optional): 响应对象的唯一标识符，默认为None时使用对象ID
+            url (str | None, optional): 请求URL，用于调试和日志记录
+            adapter (BaseRespAdapter | None, optional): 响应适配器，用于处理特定类型的响应对象
+
+        Note:
+            通常不需要直接创建此对象，而是通过create_response函数或HTTP客户端方法获得。
         """
         self._raw = response
         self._index = index if index is not None else id(self)
@@ -177,14 +208,68 @@ class UnifiedResp:
     def xpath(self, *args: str) -> list[list[Any]]:
         """执行XPath选择查询
 
+        使用XPath表达式查询HTML元素，支持多个XPath表达式同时查询。
+
         Args:
-            *args: XPath表达式
+            *args (str): XPath表达式，支持多个表达式同时查询
 
         Returns:
-            list[list[Any]]: 查询结果列表
+            list[list[Any]]: 查询结果列表，每个XPath表达式对应一个结果列表
+
+        Example:
+            >>> response = get('https://example.com')
+            >>> # 单个XPath查询
+            >>> titles = response.xpath('//title/text()')
+            >>> print(titles[0])  # ['页面标题']
+            >>> # 多个XPath查询
+            >>> results = response.xpath('//title/text()', '//a/@href', '//p/text()')
+            >>> titles = results[0]  # 标题列表
+            >>> links = results[1]  # 链接列表
+            >>> paragraphs = results[2]  # 段落列表
+
+        Note:
+            返回的结果是二维列表，每个XPath表达式对应一个结果列表。
         """
         self._dom_parser.parse_html(self.text)
         return self._dom_parser.xpath(*args)
+
+    def css_select(self, selector: str) -> Any:
+        """CSS选择器查询
+
+        使用CSS选择器语法查询HTML元素，返回PyQuery对象。
+
+        Args:
+            selector (str): CSS选择器，如'div.content', '#main', '.class-name'等
+
+        Returns:
+            Any: PyQuery查询结果对象，支持链式调用
+
+        Example:
+            >>> response = get('https://example.com')
+            >>> # 选择标题
+            >>> title = response.css_select('title').text()
+            >>> # 选择所有链接
+            >>> links = response.css_select('a')
+            >>> for link in links:
+            >>>     print(link.attr('href'))
+            >>> # 选择特定类名的元素
+            >>> content = response.css_select('.content p').text()
+
+        Note:
+            如果选择器查询失败，会返回空的PyQuery对象而不是抛出异常。
+        """
+        from pyquery import PyQuery
+
+        self._dom_parser.parse_html(self.text)
+        query = self._dom_parser.get_pyquery()
+        if query is None:
+            return PyQuery('')
+
+        try:
+            return query(selector)
+        except Exception as e:
+            print(f'Warning: CSS选择器查询失败: {selector}, 错误: {e}')
+            return PyQuery('')
 
     @property
     def dom(self) -> Any | None:
@@ -276,7 +361,7 @@ class UnifiedResp:
         if self._adapter:
             return self._adapter.get_cookies()
         if self._raw and hasattr(self._raw, 'cookies'):
-            return dict(self._raw.cookies)
+            return self._raw.cookies.copy()
         return {}
 
     @property
@@ -289,7 +374,8 @@ class UnifiedResp:
         if self._adapter:
             return self._adapter.get_headers()
         if self._raw and hasattr(self._raw, 'headers'):
-            return dict(self._raw.headers)
+            # 使用 .copy() 而不是 dict() 构造函数，更高效
+            return self._raw.headers.copy()
         return {}
 
     @property

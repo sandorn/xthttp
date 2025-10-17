@@ -1,0 +1,29 @@
+# Include the README file
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+
+# Include the pyproject.toml file
+include pyproject.toml
+
+# Include example files
+recursive-include examples *.py
+
+# Exclude test files from distribution
+exclude tests/
+exclude test_*.py
+
+# Exclude development files
+exclude .gitignore
+exclude .github/
+exclude .vscode/
+exclude .idea/
+
+# Exclude cache and temporary files
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude .DS_Store
+global-exclude Thumbs.db
