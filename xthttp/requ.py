@@ -29,26 +29,11 @@ from typing import Any
 import requests
 from nswrapslite.retry import spider_retry
 
-from .headers import TIMEOUT_REQU, Head
-from .resp import UnifiedResp
+from .headers import Head, TimeoutConfig
+from .resp import UnifiedResp, create_response
 
 # 支持的HTTP请求方法（使用集合提高查找效率）
 REQUEST_METHODS: set[str] = {'get', 'post', 'head', 'options', 'put', 'delete', 'trace', 'connect', 'patch'}
-
-# Head实例缓存（避免重复创建）
-_HEAD_INSTANCE: Head | None = None
-
-
-def _get_head_instance() -> Head:
-    """获取Head单例实例
-
-    Returns:
-        Head: Head类的单例实例
-    """
-    global _HEAD_INSTANCE
-    if _HEAD_INSTANCE is None:
-        _HEAD_INSTANCE = Head()
-    return _HEAD_INSTANCE
 
 
 @spider_retry
@@ -74,11 +59,11 @@ def _retry_request(method: str, url: str, *args: Any, **kwargs: Any) -> UnifiedR
     filtered_kwargs = {k: v for k, v in kwargs.items() if k not in {'callback', 'index', 'timeout'}}
 
     index = kwargs.get('index', id(url))
-    timeout = kwargs.get('timeout', TIMEOUT_REQU)
+    timeout = kwargs.get('timeout', TimeoutConfig.get_requests_timeout())
 
     response = requests.request(method, url, *args, timeout=timeout, **filtered_kwargs)
     response.raise_for_status()
-    return UnifiedResp(response, response.content, index, url)
+    return create_response(response, response.content, index)
 
 
 def single_parse(method: str, url: str, *args: Any, **kwargs: Any) -> UnifiedResp:
@@ -104,12 +89,9 @@ def single_parse(method: str, url: str, *args: Any, **kwargs: Any) -> UnifiedRes
     if method_lower not in REQUEST_METHODS:
         raise ValueError(f'未知的HTTP请求方法: {method}')
 
-    # 使用单例Head实例，避免重复创建
-    head_instance = _get_head_instance()
-
     # 设置默认参数（使用字典的setdefault方法）
-    kwargs.setdefault('headers', head_instance.randua)  # 自动设置随机User-Agent
-    kwargs.setdefault('timeout', TIMEOUT_REQU)  # 自动设置超时时间
+    kwargs.setdefault('headers', Head().randua)  # 自动设置随机User-Agent
+    kwargs.setdefault('timeout', TimeoutConfig.get_requests_timeout())  # 自动设置超时时间
     kwargs.setdefault('cookies', {})  # 自动设置空Cookie字典
 
     return _retry_request(method_lower, url, *args, **kwargs)
@@ -144,12 +126,12 @@ class SessionClient:
     def __init__(self) -> None:
         """初始化会话客户端"""
         self.session = requests.session()
-        self.timeout: tuple = TIMEOUT_REQU
+        self.timeout: tuple = TimeoutConfig.get_requests_timeout()
         self.method: str = ''
         self.args: tuple = ()
         self.kwargs: dict[str, Any] = {}
         self.url: str = ''
-        self._head_instance: Head = _get_head_instance()
+        self._head_instance: Head = Head()
 
     def __enter__(self) -> SessionClient:
         """支持上下文管理器协议，用于自动关闭会话
@@ -228,7 +210,7 @@ class SessionClient:
 
         # 移除不支持的参数并设置默认值
         kwargs.pop('callback', None)
-        kwargs.setdefault('timeout', TIMEOUT_REQU)
+        kwargs.setdefault('timeout', TimeoutConfig.get_requests_timeout())
 
         self.kwargs = kwargs
 
@@ -247,7 +229,7 @@ class SessionClient:
         response = self.session.request(self.method, self.url, *self.args, **self.kwargs)
         response.raise_for_status()
         self.update_cookies(dict(response.cookies))
-        return UnifiedResp(response, response.content, id(self.url), self.url)
+        return create_response(response, response.content, id(self.url))
 
     def update_cookies(self, cookie_dict: dict[str, str]) -> None:
         """更新会话的Cookie
