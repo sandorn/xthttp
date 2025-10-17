@@ -1,59 +1,23 @@
 # !/usr/bin/env python
 """
 ==============================================================
-Descripttion : HTTP Headers工具模块
+Description  : HTTP Headers工具模块
 Develop      : VSCode
 Author       : sandorn sandorn@live.cn
-LastEditTime : 2025-10-14 22:00:00
+LastEditTime : 2025-10-17 09:00:00
 Github       : https://github.com/sandorn/xthttp
+
+本模块提供HTTP请求头管理、User-Agent随机化、超时配置等功能
 ==============================================================
 """
 
 from __future__ import annotations
 
-import random
 from typing import Any
 
-from aiohttp import ClientTimeout
-from fake_useragent import UserAgent
-
-# 异步HTTP请求超时配置
-TIMEOUT_AIOH = ClientTimeout(
-    total=30,  # 总超时30秒
-    connect=8,  # 连接超时8秒
-    sock_read=20,  # 读取超时20秒
-    sock_connect=8,  # socket连接8秒
-)
-
-# 同步请求超时配置
-TIMEOUT_REQU = (8, 30)
-
-# 精简USER_AGENTS列表，保留主流浏览器最新版本
-USER_AGENTS = [
-    # Chrome最新版本
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-    # Firefox最新版本
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
-    # Safari最新版本
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.1 Safari/605.1.15',
-    # Edge最新版本
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/120.0.0.0',
-]
-
-# 默认HTTP请求头配置
-MYHEAD = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36',
-    'Accept': '*/*,application/*,application/json,text/*,text/html',
-    'Accept-Encoding': 'gzip, deflate',
-    'Content-Encoding': 'gzip,deflate,compress',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.6,en;q=0.4',
-    'Accept-Charset': 'UTF-8,GB2312,GBK,GB18030,ISO-8859-1,ISO-8859-5;q=0.7,*;q=0.7',
-    'Content-Type': 'text/html,application/x-www-form-unlencoded; charset=UTF-8',
-    'Upgrade': 'HTTP/1.1',  # 强制降级到'HTTP/1.1'
-    'Connection': 'Upgrade',
-}
+from .defaults import DefaultConfig, get_default_config
+from .timeout import TimeoutConfig
+from .user_agent import UserAgentManager, get_ua_manager
 
 
 class Head:
@@ -61,9 +25,9 @@ class Head:
 
     def __init__(self) -> None:
         """初始化Headers管理器"""
-        self.headers: dict[str, str] = MYHEAD.copy() or {}
-        self._user_agent: UserAgent | None = None
-        self._cached_ua: str | None = None
+        self._default_config = get_default_config()
+        self._ua_manager = get_ua_manager()
+        self.headers: dict[str, str] = self._default_config.copy_headers()
 
     def __setattr__(self, name: str, value: Any) -> None:
         """保护headers属性不被意外修改
@@ -80,24 +44,13 @@ class Head:
         super().__setattr__(name, value)
 
     @property
-    def _ua_instance(self) -> UserAgent:
-        """延迟加载UserAgent实例
-
-        Returns:
-            UserAgent: fake_useragent库的UserAgent实例
-        """
-        if self._user_agent is None:
-            self._user_agent = UserAgent()
-        return self._user_agent
-
-    @property
     def randua(self) -> dict[str, str]:
         """获取随机User-Agent（使用fake_useragent库）
 
         Returns:
             dict[str, str]: 包含随机User-Agent的headers字典
         """
-        self.headers['User-Agent'] = self._ua_instance.random
+        self.headers['User-Agent'] = self._ua_manager.get_random_ua()
         return self.headers
 
     @property
@@ -107,9 +60,7 @@ class Head:
         Returns:
             dict[str, str]: 包含预定义随机User-Agent的headers字典
         """
-        if self._cached_ua is None:
-            self._cached_ua = random.choice(USER_AGENTS)  # noqa: S311
-        self.headers['User-Agent'] = self._cached_ua
+        self.headers['User-Agent'] = self._ua_manager.get_cached_ua()
         return self.headers
 
     def update_headers(self, headers: dict[str, str] | None = None) -> None:
@@ -137,7 +88,7 @@ class Head:
 
     def reset_headers(self) -> None:
         """重置headers为默认配置"""
-        self.headers = MYHEAD.copy()
+        self.headers = self._default_config.copy_headers()
 
     def get_header(self, key: str, default: str | None = None) -> str | None:
         """安全获取指定header值
@@ -188,4 +139,10 @@ class Head:
         return self.headers.copy()
 
 
-__all__ = ('TIMEOUT_AIOH', 'TIMEOUT_REQU', 'Head')
+# 导出所有公共接口
+__all__ = [
+    'DefaultConfig',
+    'Head',
+    'TimeoutConfig',
+    'UserAgentManager',
+]

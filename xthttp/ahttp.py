@@ -36,8 +36,8 @@ from aiohttp import ClientSession, TCPConnector
 from nswrapslite import spider_retry
 from yarl import URL
 
-from .headers import TIMEOUT_AIOH, Head
-from .resp import UnifiedResp
+from .headers import Head, TimeoutConfig
+from .resp import UnifiedResp, create_response
 
 # 定义模块公开接口
 __all__ = ('AsyncHttpClient', 'ahttp_get', 'ahttp_get_all', 'ahttp_post', 'ahttp_post_all')
@@ -130,7 +130,7 @@ class AsyncHttpClient:
         if valid_tasks:
             async with ClientSession(
                 connector=TCPConnector(ssl=False, limit=self.max_concurrent),
-                timeout=TIMEOUT_AIOH,
+                timeout=TimeoutConfig.get_aiohttp_timeout(),
             ) as client:
                 # 并发执行所有有效任务
                 batch_results = await asyncio.gather(*[self._request_with_semaphore(task.multi_start, client) for task, _ in valid_tasks], return_exceptions=True)
@@ -265,7 +265,7 @@ class AsyncTask:
         self.url = url
         self.args = args
         kwargs.setdefault('headers', Head().randua)
-        kwargs.setdefault('timeout', TIMEOUT_AIOH)
+        kwargs.setdefault('timeout', TimeoutConfig.get_aiohttp_timeout())
         self.cookies = kwargs.pop('cookies', {})
         self.callback = kwargs.pop('callback', None)
         self.kwargs = kwargs
@@ -298,7 +298,7 @@ class AsyncTask:
 
             # 读取内容
             content = await response.read()
-            result = UnifiedResp(response, content, self.index, self.url)
+            result = create_response(response, content, self.index)
 
         return self.callback(result) if callable(self.callback) else result
 
@@ -322,7 +322,7 @@ class AsyncTask:
             **self.kwargs,
         ) as response:
             content = await response.read()
-            result = UnifiedResp(response, content, self.index, self.url)
+            result = create_response(response, content, self.index)
         return self.callback(result) if callable(self.callback) else result
 
 
