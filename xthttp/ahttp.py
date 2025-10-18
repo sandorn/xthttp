@@ -231,9 +231,9 @@ class AsyncHttpClient:
                 # 并发执行所有有效任务
                 batch_results = await asyncio.gather(*[self._request_with_semaphore(task.multi_start, client) for task, _ in valid_tasks], return_exceptions=True)
 
-                # 将有效任务结果放入正确位置
-                for (_, original_index), result in zip(valid_tasks, batch_results, strict=False):
-                    results[original_index] = result
+                # 优化结果映射：直接使用索引，避免zip的开销
+                for j, (_, original_index) in enumerate(valid_tasks):
+                    results[original_index] = batch_results[j]
 
         return results
 
