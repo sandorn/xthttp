@@ -8,7 +8,6 @@ from .headers import Head, TimeoutConfig
 from .http import SessionClient, delete, get, head, options, patch, post, put
 from .resp import HttpError, UnifiedResp, create_response, is_success
 
-__version__ = '0.1.0'
 __all__ = (
     'AsyncHttpClient',
     'Head',

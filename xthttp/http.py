@@ -27,7 +27,7 @@ from functools import partial
 from typing import Any
 
 import requests
-from nswrapslite.retry import spider_retry
+from xtwraps.retry import spider_retry
 
 from .headers import Head, TimeoutConfig
 from .resp import UnifiedResp, create_response

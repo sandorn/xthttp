@@ -34,7 +34,7 @@ from collections.abc import Callable, Sequence
 from functools import partial
 
 from aiohttp import ClientSession, TCPConnector
-from nswrapslite import spider_retry
+from xtwraps.retry import spider_retry
 from yarl import URL
 
 from .headers import Head, TimeoutConfig

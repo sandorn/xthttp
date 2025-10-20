@@ -1,6 +1,6 @@
 [project]
 name = "xthttp"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
     { name="sandorn", email="sandorn@live.cn" },
 ]
@@ -29,8 +29,10 @@ dependencies = [
     "pyquery>=2.0.0",
     "chardet>=5.0.0",
     "fake-useragent>=1.4.0",
-    "nswrapslite>=0.1.0",
+    "xtwraps>=0.1.0",
     "xtlog>=0.1.7",
+    "yarl>=1.22.0",
+    "html5lib>=1.1",
 ]
 
 [project.urls]
